@@ -273,7 +273,8 @@ def twin(args) -> int:
         title = dict(STEPS)[key]
         if key in skip or (done_test() and not args.force):
             say("skip", key, "done before" if key not in skip else "skipped (--skip)")
-            summary["steps"][key] = {"skipped": True}
+            before = ((_json(out / "twin.json") or {}).get("steps") or {}).get(key) or {}
+            summary["steps"][key] = dict(before, skipped=True)   # the numbers of the run that did it
             return True
         say("start", key, title)
         res = run(cmd, log_path, watchdog=watchdog, nice=nice)

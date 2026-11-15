@@ -45,7 +45,7 @@ Useful options:
 | `--no-imagery`, `--no-dem` | skip orthophoto and elevation acquisition |
 | `--no-refine` | skip the imagery-driven refinement pass |
 | `--fixture <file>` | use a cached Overpass JSON instead of fetching |
-| `--profile <name>` | region profile: `nl_urban`, `eu_dense`, `us_urban`, `us_suburban`, `auto` |
+| `--profile <name>` | region profile: `nl_urban`, `eu_dense`, `us_urban`, `us_suburban`, `jp_urban`, `auto` (by country, with the country's open data: see [A twin of any place](#a-twin-of-any-place)) |
 
 The stage ends by parsing the result with `carla.Map` and writing `report.json`; a non-zero exit means the OpenDRIVE did not validate.
 
@@ -92,6 +92,76 @@ Central Eindhoven (1.6 x 1.6 km): 2,094 roads, 242 junctions, AHN terrain 12.1-2
 buildings (274k triangles); its 64 ground tiles take 4 minutes and 64 MB of JPEG textures, with 9.8 % of the
 ground replaced (standing objects) and 2.2 % brightened (shadows). Public Overpass servers often time out on an area this size; the OSM stage then
 fetches it in four quarters and merges them.
+
+#### A twin of any place
+
+`python -m twinmodel twin` goes from a place to a baked level in one command, with the best keyless, openly
+licensed data of the place's country (`twinmodel/regions.py`; every provider is skipped outside its coverage and
+the next one takes over, so a failing or absent service never stops the twin):
+
+```sh
+python -m twinmodel twin "Plaza Mayor, Salamanca" --name SalamancaPlaza --size 1.0          # stages 1-2 and the extras
+python -m twinmodel twin --bbox 35.6555 139.6955 35.6635 139.7055 --name ShibuyaCrossing \
+    --bake --carla-root ~/carla58/carla --engine ~/carla58/UnrealEngine5_carla \
+    --carla-python ~/carla58/venv/bin/python --no-nav-build                                # ... and stage 3
+```
+
+It finds the place with Nominatim (or takes `--bbox`), runs `build --profile auto`, `bake-export`,
+`tools/real_buildings.py`, `tools/ground_photo.py` where the country has an open aerial photo, writes
+`ATTRIBUTION.md` (every source with its licence; the bake copies it next to the level's `OpenDrive/` and `TM/`
+folders), and with `--bake` runs `bake_level.py` in the CARLA 1.0 editor under a memory watchdog (`--max-rss-gb`,
+`--min-avail-gb`, `--min-start-gb`), then (with `--no-nav-build`) the two navigation builders one at a time. Each
+step prints one plain line (`[twin] done buildings: 1,221 buildings from catastro, ...`); the logs go to
+`<out>/twin.log` and the numbers to `<out>/twin.json`. Steps done before are skipped (`--force` redoes them). The
+bake needs a CARLA 1.0 (ue58-dev) source build with the editor; without `--bake` the twin stops at the manifest,
+which can be baked later on a machine that has one. Paths can also come from `TWINMODEL_CARLA_ROOT`,
+`TWINMODEL_UE_ENGINE`, `TWINMODEL_CARLA_PYTHON` or `~/.config/twinmodel/toolchain.json`.
+
+| Country | Aerial photo (ground, roofs) | Terrain | Buildings |
+| --- | --- | --- | --- |
+| NL | PDOK Luchtfoto 8 cm (CC BY 4.0) | AHN 0.5 m (CC0) | 3DBAG LoD 2.2 (CC BY 4.0) |
+| ES | ICGC 25 cm in Catalonia, else IGN PNOA 25 cm (CC BY 4.0) | ICGC 2 m, IGN MDT05 (CC BY 4.0) | Catastro INSPIRE buildings: floors per part, year, use (CC BY 4.0; not the Basque Country, Navarre) |
+| FR | IGN BD ORTHO 20 cm (Etalab 2.0) | IGN RGE ALTI 1 m (Etalab 2.0) | IGN BD TOPO: ground, eaves and ridge heights, floors, year, use (Etalab 2.0) |
+| BE | Digitaal Vlaanderen orthophoto 25 cm, Flanders only (Modellicentie Gratis Hergebruik) | global | Overture |
+| CH | swisstopo SWISSIMAGE 10 cm | swisstopo swissALTI3D 0.5 m | Overture |
+| US | NYS orthos 15 cm in New York State, else USDA NAIP 60 cm (public domain) | USGS 3DEP 1 m (public domain) | NYC 3D model in NYC, else Overture |
+| JP | GSI seamless photo (GSI terms, CC BY 4.0 compatible) | GSI DEM 5 m | PLATEAU LoD 2 with its own photo textures (listed wards), else Overture |
+| elsewhere | none: CARLA's ground materials, plain roofs | AWS Terrain Tiles, Copernicus GLO-30 | Overture Maps (ODbL / CDLA Permissive 2.0), else OSM |
+
+There is no openly licensed global aerial photo at street scale (ESRI, Google and Bing imagery may not be used;
+Sentinel-2's 10 m pixels are too coarse for a street), so outside these countries the ground keeps CARLA's
+materials. Overture is read from its GeoParquet release on S3 with DuckDB (`pip install duckdb`, no key); where it
+fails the twin's own OSM footprints are used. Footprint models (Catastro, BD TOPO, Overture, OSM) become prisms
+with gabled, hipped, pyramidal or skillion roofs where the source gives a roof shape (or BD TOPO a ridge above the
+eaves); small homes without one get a pitched roof by the region's habit. Facade styles follow the region:
+Dutch and north European brick, southern sandstone (before 1940) and warm render, US pre-war stone, Japanese render.
+
+**Left-hand traffic.** The lane graph is right-hand by construction, so in a left-hand country (`jp_urban`, or any
+profile in a country of `regions.LEFT_HAND`) it is built in the mirror image of the place (OSM mirrored about the
+frame's central meridian, which the transverse Mercator frame keeps exact, with left and right swapped in side and
+turn tags) and mirrored back with its lane ids negated (`twinmodel/lefthand.py`); every road carries
+`rule="LHT"`, which CARLA 1.0 reads. On the Shibuya twin CARLA 1.0's map has oncoming traffic on the driver's
+right at all 3,288 innermost lanes checked, none on the left. `jp_urban` also draws zebras along OSM's crossing
+ways inside junctions (`CrossingRules.from_ways`): the scramble's legs and diagonal.
+
+**PLATEAU's photo textures.** Where a PLATEAU city model has LoD 2 appearances (Shibuya 2023: 98 % of the
+surfaces), the textures are taken from the CityGML (`citygml.textures`, the images fetched from the zip by range
+requests) and packed into one 4096 px atlas per 250 m tile (`realbuildings.pack_atlas`), so the buildings carry
+their own photographed facades instead of a synthetic style (`real_buildings.py --no-source-textures` for the
+styles). They come from oblique aerial photos: right in colour and layout, soft at street level.
+
+**Tested (2026-11-15, lin5080, the CARLA 1.0 editor headless with `-nullrhi`):**
+
+| Twin | Data | Roads | Buildings | Python stages | Bake | Content |
+| --- | --- | --- | --- | --- | --- | --- |
+| `SalamancaPlaza`, 1 km around Plaza Mayor, Salamanca | PNOA 25 cm, MDT05 (781-815 m), Catastro | 568 | 1,221 (5,615 parts, 1,215 with a year), 36 photo ground tiles | 9 min | 4.8 min, peak 7.8 GB; navigation 50 s | 90 MB, 568 actors, 82 textured materials |
+| `ShibuyaCrossing`, 0.9 km around the scramble, Tokyo (left-hand) | GSI photo, GSI DEM 5 m (9-36 m), PLATEAU LoD 2 with photo textures | 1,399 | 1,648 (54,501 photo-textured surfaces, 18 atlases), 16 photo ground tiles | 38 min, 5 with the downloads cached | 3.0 min, peak 7.5 GB; navigation 55 s | 117 MB, 354 actors, 54 textured materials |
+
+Both levels load in a CARLA 1.0 server (371 and 400 spawn points, 20 of 20 navigation-mesh queries answered) and
+drive with SUMO traffic through Coupled CARLA: 60 s headless trials at RTF 1.16 (Salamanca) and 1.18 (Shibuya), no
+collisions. The Shibuya driver kept to the left-hand lanes: none of its 186 samples off a junction ran against its
+lane. Their looks still need a rendering server. Coupled CARLA's map maker ran the whole chain for a third place
+(`--twin`, Grote Markt in Leuven, 0.5 km, without the bake): the Flemish photo and 849 Overture buildings.
 
 ### 3. Bake the Unreal level
 
