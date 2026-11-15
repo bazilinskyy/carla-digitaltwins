@@ -159,8 +159,10 @@ styles). They come from oblique aerial photos: right in colour and layout, soft 
 
 Both levels load in a CARLA 1.0 server (371 and 400 spawn points, 20 of 20 navigation-mesh queries answered) and
 drive with SUMO traffic through Coupled CARLA: 60 s headless trials at RTF 1.16 (Salamanca) and 1.18 (Shibuya), no
-collisions. The Shibuya driver kept to the left-hand lanes: none of its 186 samples off a junction ran against its
-lane. Their looks still need a rendering server. Coupled CARLA's map maker ran the whole chain for a third place
+collisions. The Shibuya driver (the autopilot) drove the left-hand lanes with oncoming traffic on its right for the
+first 34 s, then left the lanes on the multi-level roads by the station (ramps at 32-39 m) and circled on a paved
+area outside the OpenDRIVE: Shibuya's stacked roads and plazas need a look. Their looks still need a rendering
+server. Coupled CARLA's map maker ran the whole chain for a third place
 (`--twin`, Grote Markt in Leuven, 0.5 km, without the bake): the Flemish photo and 849 Overture buildings.
 
 ### 3. Bake the Unreal level
