@@ -301,6 +301,9 @@ def test_south_facades():
     st, _ = fc.classify(fc.BuildingInfo(id="a", year=1975, uses={"residential": 1}, height_m=15, area_m2=300,
                                         region="south"))
     assert st == "render_warm"
+    old_uni, _ = fc.classify(fc.BuildingInfo(id="u", year=1600, uses={"government": 1}, height_m=18, area_m2=3000,
+                                             region="south"))
+    assert old_uni == "stone_old"
     nl, _ = fc.classify(fc.BuildingInfo(id="a", year=1975, uses={"residential": 1}, height_m=15, area_m2=300))
     assert nl == "brick_postwar"                                # the Netherlands unchanged
     for name in ("stone_old", "render_warm"):

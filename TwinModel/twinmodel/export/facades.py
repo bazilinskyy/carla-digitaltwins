@@ -168,6 +168,8 @@ def classify(b: BuildingInfo) -> tuple[str, bool]:
     shop_floor = shops and b.height_m >= SHOP_FLOOR_M + 2.5
     if b.region == "us" and 0 < year < 1946 and b.height_m >= 20.0:
         return "stone_prewar", shop_floor   # Manhattan's pre-war towers and apartment blocks
+    if b.region == "south" and 0 < year < 1940 and b.height_m < 40.0:
+        return "stone_old", shop_floor      # old public buildings, churches, colleges: stone, not office glass
     if use in OFFICE_USES or (use is None and cat in OSM_OFFICE) or \
             (use in SHOP_USES and b.height_m >= 12.0):
         if year >= 1985 or (year == 0 and b.height_m >= 25.0):

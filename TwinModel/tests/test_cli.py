@@ -133,7 +133,9 @@ def test_select_profile_auto_without_country_lookup(osm_fixture, monkeypatch, tm
     monkeypatch.delattr(osm_mod, "country_for_bbox", raising=False)
     osm, frame = osm_fixture
     p, meta = cli.select_profile("auto", osm, frame, BBOX, tmp_path)
-    assert p is profiles.EU_DENSE
+    # the profile's street rules, with the data of an unknown country (twinmodel.regions: global fallbacks)
+    assert p.name == "eu_dense" and p.lane == profiles.EU_DENSE.lane
+    assert p.sources.dem == ("aws_terrain", "copernicus_aws")
     assert meta["source"] == "auto" and meta["iso2"] is None and meta["building_coverage"] > 0.3
 
 
@@ -149,15 +151,17 @@ def test_select_profile_auto_uses_country_and_density(osm_fixture, monkeypatch, 
     monkeypatch.setattr(osm_mod, "country_for_bbox", fake_country, raising=False)
     p, meta = cli.select_profile("auto", osm, frame, BBOX, tmp_path)
     assert calls == [(BBOX, tmp_path)]
-    assert p is profiles.US_URBAN  # Eixample density (> 0.30) in the US -> downtown grid
+    assert p.name == "us_urban" and p.lane == profiles.US_URBAN.lane  # Eixample density in the US -> downtown
+    plan = meta.pop("region_plan")
+    assert plan["iso2"] == "US" and plan["buildings"][0] == "nyc3d"
     assert meta == {"name": "us_urban", "source": "auto", "iso2": "US",
                     "building_coverage": pytest.approx(meta["building_coverage"])}
     monkeypatch.setattr(osm_mod, "country_for_bbox", lambda bbox: "ES", raising=False)  # 1-arg form
     p, meta = cli.select_profile("auto", osm, frame, BBOX, tmp_path)
-    assert p is profiles.EU_DENSE and meta["iso2"] == "ES"
+    assert p.name == "eu_dense" and meta["iso2"] == "ES" and p.sources.ortho[0] == "icgc"   # Barcelona
     monkeypatch.setattr(osm_mod, "country_for_bbox", lambda bbox, cache_dir: 1 / 0, raising=False)
     p, meta = cli.select_profile("auto", osm, frame, BBOX, tmp_path)
-    assert p is profiles.EU_DENSE and meta["iso2"] is None  # lookup failure -> unknown
+    assert p.name == "eu_dense" and meta["iso2"] is None  # lookup failure -> unknown
     p, meta = cli.select_profile("us_suburban", osm, frame, BBOX, tmp_path)
     assert p is profiles.US_SUBURBAN and meta["source"] == "cli"
 
