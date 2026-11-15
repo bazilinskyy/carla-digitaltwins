@@ -144,13 +144,18 @@ def _local(tag: str) -> str:
     return tag.rsplit("}", 1)[-1]
 
 
-def _rings(elem) -> list[np.ndarray]:
-    """Polygons under elem as [exterior, *interiors] rings, each an (n, 3) array (closing point dropped)."""
+GML_ID = "{http://www.opengis.net/gml}id"
+
+
+def _rings(elem, ids: Optional[list] = None) -> list[np.ndarray]:
+    """Polygons under elem as [exterior, *interiors] rings, each an (n, 3) array (closing point dropped). With
+    ``ids`` (a list), the gml:ids of each polygon's rings are appended to it, aligned with the rings (the
+    appearance's texture coordinates name rings by id)."""
     out = []
     for poly in elem.iter():
         if _local(poly.tag) != "Polygon":
             continue
-        rings = []
+        rings, rids = [], []
         for part in poly:
             kind = _local(part.tag)
             if kind not in ("exterior", "interior"):
@@ -158,6 +163,7 @@ def _rings(elem) -> list[np.ndarray]:
             for lr in part.iter():
                 if _local(lr.tag) != "LinearRing":
                     continue
+                rid = lr.get(GML_ID)
                 vals = []
                 for c in lr:
                     if _local(c.tag) in ("posList", "pos") and c.text:
@@ -172,16 +178,21 @@ def _rings(elem) -> list[np.ndarray]:
                     continue
                 if kind == "exterior":
                     rings.insert(0, pts)
+                    rids.insert(0, rid)
                 elif rings:
                     rings.append(pts)
+                    rids.append(rid)
         if rings:
             out.append(rings)
+            if ids is not None:
+                ids.append(rids)
     return out
 
 
-def building_surfaces(bld) -> list[tuple[str, list[np.ndarray]]]:
+def building_surfaces(bld, with_ids: bool = False) -> list[tuple]:
     """(kind, rings) of a building: thematic surfaces of the highest LoD, else the faces of its LoD 2 /
-    LoD 1 solid or multi-surface (kind None: classified by the normal later)."""
+    LoD 1 solid or multi-surface (kind None: classified by the normal later). ``with_ids``: (kind, rings,
+    ring ids)."""
     by_lod = {}
     for bounded in bld.iter():
         if _local(bounded.tag) != "boundedBy":
@@ -191,11 +202,19 @@ def building_surfaces(bld) -> list[tuple[str, list[np.ndarray]]]:
             for geom in surf:
                 m = re.match(r"lod(\d)", _local(geom.tag))
                 if m:
-                    by_lod.setdefault(int(m.group(1)), []).extend((kind, r) for r in _rings(geom))
+                    ids = []
+                    rr = _rings(geom, ids)
+                    by_lod.setdefault(int(m.group(1)), []).extend(
+                        (kind, r, i) if with_ids else (kind, r) for r, i in zip(rr, ids))
     if by_lod:
         return by_lod[max(by_lod)]
     for lod in ("lod2Solid", "lod2MultiSurface", "lod1Solid", "lod1MultiSurface"):
-        out = [(None, r) for g in bld.iter() if _local(g.tag) == lod for r in _rings(g)]
+        out = []
+        for g in bld.iter():
+            if _local(g.tag) == lod:
+                ids = []
+                rr = _rings(g, ids)
+                out += [(None, r, i) if with_ids else (None, r) for r, i in zip(rr, ids)]
         if out:
             return out
     return []
@@ -215,9 +234,10 @@ def attributes(bld) -> dict:
     return out
 
 
-def buildings(path: Path, inside: Callable[[np.ndarray], np.ndarray]) -> Iterator[dict]:
+def buildings(path: Path, inside: Callable[[np.ndarray], np.ndarray], with_ids: bool = False) -> Iterator[dict]:
     """Stream the Buildings of a CityGML file that have a vertex where ``inside`` (an (n, 3) array of file
-    coordinates -> bool array) holds: {"id", "attrs", "surfaces": [(kind, rings)]}."""
+    coordinates -> bool array) holds: {"id", "attrs", "surfaces": [(kind, rings)]} (``with_ids``: also
+    "ring_ids", aligned with the surfaces)."""
     ctx = ET.iterparse(str(path), events=("start", "end"))
     _, root = next(ctx)
     for ev, el in ctx:
@@ -229,11 +249,77 @@ def buildings(path: Path, inside: Callable[[np.ndarray], np.ndarray]) -> Iterato
             continue
         if tag != "Building":
             continue
-        surfaces = building_surfaces(el)
+        surfaces = building_surfaces(el, with_ids=with_ids)
         if surfaces:
             first = surfaces[0][1][0]
-            hit = inside(first[:1]).any() or any(inside(r[0]).any() for _, r in surfaces)
+            hit = inside(first[:1]).any() or any(inside(sf[1][0]).any() for sf in surfaces)
             if hit:
-                yield {"id": el.get("{http://www.opengis.net/gml}id"), "attrs": attributes(el),
-                       "surfaces": surfaces}
+                b = {"id": el.get(GML_ID), "attrs": attributes(el), "surfaces": [sf[:2] for sf in surfaces]}
+                if with_ids:
+                    b["ring_ids"] = [sf[2] for sf in surfaces]
+                yield b
         el.clear()
+
+
+def textures(path: Path, ring_ids: set) -> dict:
+    """{ring id: (image URI relative to the CityGML file, (n, 2) texture coordinates)} of the CityGML file's
+    appearances (app:ParameterizedTexture, PLATEAU's rgbTexture theme), for the rings in ``ring_ids``. A second
+    streaming pass: the appearances come after the city objects."""
+    out = {}
+    ctx = ET.iterparse(str(path), events=("end",))
+    for _, el in ctx:
+        tag = _local(el.tag)
+        if tag == "cityObjectMember":
+            el.clear()
+            continue
+        if tag != "ParameterizedTexture":
+            continue
+        uri = None
+        for c in el:
+            if _local(c.tag) == "imageURI" and c.text:
+                uri = c.text.strip()
+        if uri:
+            for tc in el.iter():
+                if _local(tc.tag) != "textureCoordinates":
+                    continue
+                rid = (tc.get("ring") or "").lstrip("#")
+                if rid in ring_ids and tc.text:
+                    uv = np.asarray(tc.text.split(), dtype=np.float64)
+                    out[rid] = (uri, uv[:len(uv) // 2 * 2].reshape(-1, 2))
+        el.clear()
+    return out
+
+
+def fetch_files(source: str, names: list, dest: Path, workers: int = 8) -> dict:
+    """Download zip members (e.g. texture images) into dest, a few at a time (range requests on a URL); returns
+    member name -> local path (existing files are kept)."""
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+    dest.mkdir(parents=True, exist_ok=True)
+    out, todo = {}, []
+    for n in names:
+        local = dest / re.sub(r"[^\w.-]", "_", n)
+        out[n] = local
+        if not local.exists():
+            todo.append(n)
+    if not todo:
+        return out
+    local_zip = threading.local()
+
+    def one(n):
+        zf = getattr(local_zip, "zf", None)
+        if zf is None:
+            zf = local_zip.zf = _zip(source)
+        data = zf.read(n)
+        tmp = Path(str(out[n]) + ".part")
+        tmp.write_bytes(data)
+        os.replace(tmp, out[n])
+        return len(data)
+    total = 0
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as ex:
+        for k, size in enumerate(ex.map(one, todo)):
+            total += size
+            if (k + 1) % 500 == 0:
+                print("citygml: %d of %d files (%.0f MB)" % (k + 1, len(todo), total / 1e6), flush=True)
+    print("citygml: %d files downloaded (%.0f MB)" % (len(todo), total / 1e6), flush=True)
+    return out

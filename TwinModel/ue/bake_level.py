@@ -25,6 +25,7 @@ What it does (DESIGN.md §Baker):
                          PlayerStart, BP_Carla_Sky)
   4. OpenDRIVE           <Content>/Carla/Maps/Twins/<Name>/OpenDrive/<Name>.xodr, which is where
                          UOpenDrive::GetXODR looks for a level saved under Maps/Twins/<Name>/
+  4a. credits           <Content>/Carla/Maps/Twins/<Name>/ATTRIBUTION.md (manifest ``attribution``)
   4b. TM cache          <Content>/Carla/Maps/Twins/<Name>/TM/<Name>.bin, so a connecting client
                          does not rebuild the Traffic Manager's map graph every session
   5. buildings           ``--buildings procedural``: instead of the manifest's extruded facade
@@ -1482,6 +1483,24 @@ def copy_xodr(manifest, name, map_root=MAP_ROOT):
     return dst
 
 
+def copy_attribution(manifest, name, map_root=MAP_ROOT):
+    """The twin's ATTRIBUTION.md (its data sources and licences, written by ``twinmodel twin``) next to the level's
+    OpenDrive/ and TM/ folders, so it travels with the level's content."""
+    rel = manifest.get("attribution")
+    if not rel:
+        return None
+    src = os.path.join(os.path.dirname(manifest["_path"]), rel)
+    if not os.path.exists(src):
+        warn("attribution file %s not found" % src)
+        return None
+    dst_dir = os.path.join(content_dir_for(map_root), name)
+    os.makedirs(dst_dir, exist_ok=True)
+    dst = os.path.join(dst_dir, "ATTRIBUTION.md")
+    shutil.copyfile(src, dst)
+    log("attribution -> %s" % dst)
+    return dst
+
+
 TM_COOK_SNIPPET = (
     "import sys, carla;"
     "m = carla.Map(sys.argv[1], open(sys.argv[2], encoding='utf-8').read());"
@@ -1723,6 +1742,7 @@ def main(argv):
         report["procedural_buildings"] = place_buildings(world, manifest, name, mats, roof_mat)
     xodr = copy_xodr(manifest, name, args.map_root)
     report["xodr"] = xodr
+    report["attribution"] = copy_attribution(manifest, name, args.map_root)
     report["tm_cache"] = (None if args.no_tm_cache
                           else cook_tm_cache(xodr, name, args.map_root, args.python_bin))
     report["map_default_weather"] = write_map_default_weather(name)

@@ -11,6 +11,7 @@ rarely gives a construction year.
 """
 from __future__ import annotations
 
+import json
 import math
 import re
 from pathlib import Path
@@ -68,7 +69,7 @@ def meshes(bbox) -> set:
     return out
 
 
-def read_citygml(bbox, source, pad_deg=0.0003):
+def read_citygml(bbox, source, pad_deg=0.0003, with_textures: bool = True):
     s, w, n, e = bbox
     want_meshes = meshes(bbox)
 
@@ -80,17 +81,47 @@ def read_citygml(bbox, source, pad_deg=0.0003):
         return (p[:, 0] >= s - pad_deg) & (p[:, 0] <= n + pad_deg) & (p[:, 1] >= w - pad_deg) & (p[:, 1] <= e + pad_deg)
 
     out = []
+    names = json.loads((citygml.CACHE / citygml._key(source) / "_index.json").read_text())["names"] \
+        if (citygml.CACHE / citygml._key(source) / "_index.json").exists() else []
     for f in citygml.members(source, want):
-        for b in citygml.buildings(f, inside):
-            out.append({"id": b["id"], "attrs": b["attrs"],
-                        "surfaces": [[k, [np.round(r, 8).ravel().tolist() for r in rings]]
-                                     for k, rings in b["surfaces"]]})
-        print("plateau: %s: %d buildings in the bbox so far" % (f.name, len(out)), flush=True)
+        blds = list(citygml.buildings(f, inside, with_ids=with_textures))
+        tex = {}
+        if with_textures:
+            names = names or json.loads((citygml.CACHE / citygml._key(source) / "_index.json").read_text())["names"]
+            member = next((nm for nm in names if re.sub(r"[^\w.-]", "_", nm) == f.name), None)
+            rids = {r for b in blds for sf in b.get("ring_ids", []) for r in sf if r}
+            tex = citygml.textures(f, rids) if rids and member else {}
+            folder = member.rsplit("/", 1)[0] + "/" if member and "/" in member else ""
+        for b in blds:
+            rec = {"id": b["id"], "attrs": b["attrs"],
+                   "surfaces": [[k, [np.round(r, 8).ravel().tolist() for r in rings]] for k, rings in b["surfaces"]]}
+            if tex:
+                t = []
+                for ids in b.get("ring_ids", []):
+                    got = [tex.get(r) for r in ids]
+                    if got and got[0] is not None and all(g is not None and g[0] == got[0][0] for g in got):
+                        t.append([folder + got[0][0], [np.round(g[1], 5).ravel().tolist() for g in got]])
+                    else:
+                        t.append(None)
+                rec["tex"] = t
+            out.append(rec)
+        print("plateau: %s: %d buildings in the bbox so far, %d textured surfaces" % (
+            f.name, len(out), sum(1 for b in out for t in b.get("tex", []) if t)), flush=True)
     return out
 
 
-def load(build: Path, man: dict, looks: bool = True, source: str = None, **_):
-    """(RealBuilding list, Source) for the bake export's bbox."""
+def texture_files(source: str, raw: list, cache_root=None) -> dict:
+    """Download the texture images the buildings use (once, into the CityGML cache); member -> local path."""
+    names = sorted({t[0] for b in raw for t in b.get("tex", []) if t})
+    if not names:
+        return {}
+    dest = (cache_root or citygml.CACHE) / citygml._key(source) / "tex"
+    return citygml.fetch_files(source, names, dest)
+
+
+def load(build: Path, man: dict, looks: bool = True, source: str = None, textures: bool = True, **_):
+    """(RealBuilding list, Source) for the bake export's bbox. ``textures``: PLATEAU's own facade and roof photos
+    (LoD 2 appearance, where the city has them: Shibuya 2023 does) on the surfaces that carry them."""
     from pyproj import Transformer
     from shapely.geometry import Polygon
     from shapely.ops import unary_union
@@ -100,13 +131,20 @@ def load(build: Path, man: dict, looks: bool = True, source: str = None, **_):
     if source is None:
         raise ValueError("no PLATEAU dataset listed for %s (buildings_plateau.DATASETS)" % (bbox,))
     to_model = Transformer.from_crs("EPSG:6668", model_proj(man), always_xy=True)
-    raw = cache_json(build / "plateau" / ("citygml_%.5f_%.5f_%.5f_%.5f.json.gz" % bbox),
-                     lambda: read_citygml(bbox, source))
-    print(f"plateau: {len(raw)} buildings")
+    name = "citygml_tex_%.5f_%.5f_%.5f_%.5f.json.gz" if textures else "citygml_%.5f_%.5f_%.5f_%.5f.json.gz"
+    raw = cache_json(build / "plateau" / (name % bbox), lambda: read_citygml(bbox, source, with_textures=textures))
+    files = {}
+    if textures and looks:
+        try:
+            files = texture_files(source, raw)
+        except Exception as exc:  # noqa: BLE001 - styled facades instead
+            print(f"plateau: texture download failed ({exc}); facade styles instead")
+    print(f"plateau: {len(raw)} buildings, {len(files)} texture images")
     out = []
     for b in raw:
-        surfaces = []
-        for kind, rings in b["surfaces"]:
+        surfaces, texmap = [], {}
+        btex = b.get("tex") or [None] * len(b["surfaces"])
+        for (kind, rings), tx in zip(b["surfaces"], btex):
             rr = []
             for flat in rings:
                 p = np.asarray(flat, dtype=np.float64).reshape(-1, 3)
@@ -117,6 +155,12 @@ def load(build: Path, man: dict, looks: bool = True, source: str = None, **_):
                 if nrm is None:
                     continue
                 kind = "RoofSurface" if nrm[2] > 0.7 else "GroundSurface" if nrm[2] < -0.7 else "WallSurface"
+            if tx and files.get(tx[0]) is not None and files[tx[0]].exists():
+                uvs = [np.asarray(u, dtype=np.float64).reshape(-1, 2) for u in tx[1]]
+                if len(uvs) == len(rr):
+                    uvs = [u[:len(r)] if len(u) >= len(r) else None for u, r in zip(uvs, rr)]
+                    if all(u is not None and len(u) == len(r) for u, r in zip(uvs, rr)):
+                        texmap[len(surfaces)] = (str(files[tx[0]]), uvs)
             surfaces.append((rr, kind))
         if not surfaces:
             continue
@@ -148,10 +192,11 @@ def load(build: Path, man: dict, looks: bool = True, source: str = None, **_):
             storeys = int(a.get("storeysAboveGround") or 0)
         except ValueError:
             storeys = 0
-        out.append(RealBuilding(id="JP." + str(b["id"]), surfaces=surfaces, poly=poly, ground=ground,
+        out.append(RealBuilding(id="JP." + str(b["id"]), surfaces=surfaces, textures=texmap, poly=poly, ground=ground,
                                 height=height, roof_z=top, year=year, uses=dict(USAGE.get(str(a.get("usage")), {})),
                                 levels=storeys if 0 < storeys < 999 else 0, region="jp"))
-    src = Source(name="plateau", label="PLATEAU CityGML (MLIT)",
+    n_tex = sum(len(b.textures) for b in out)
+    src = Source(name="plateau", label="PLATEAU CityGML (MLIT)" + (" with its LoD 2 textures" if n_tex else ""),
                  asset_source="PLATEAU, MLIT Japan (PLATEAU terms of use, attribution)", roof_photo_max_m=25.0,
-                 skirt=True)
+                 skirt=True, extra_stats={"textured_surfaces": n_tex})
     return out, src

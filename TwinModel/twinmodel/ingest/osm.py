@@ -19,7 +19,8 @@ import requests
 log = logging.getLogger("twinmodel.ingest.osm")
 
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
-OVERPASS_MIRRORS = ("https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter",
+OVERPASS_MIRRORS = ("https://overpass-api.de/api/interpreter", "https://overpass.openstreetmap.fr/api/interpreter",
+                    "https://overpass.kumi.systems/api/interpreter",
                     "https://overpass.private.coffee/api/interpreter", "https://maps.mail.ru/osm/tools/overpass/api/interpreter")
 _USER_AGENT = "twinmodel/0.1 (carla-digitaltwins spike)"
 
@@ -141,7 +142,7 @@ def fetch_overpass(bbox_swne: tuple[float, float, float, float],
     last_err: Optional[Exception] = None
     # the public Overpass servers are often overloaded (502/504): rotate through mirrors on retry
     urls = [url] + [m for m in OVERPASS_MIRRORS if m != url]
-    for attempt in range(max(retries, len(urls))):
+    for attempt in range(max(retries, 2 * len(urls))):   # two rounds over the mirrors
         try:
             url_now = urls[attempt % len(urls)]
             log.info("overpass fetch bbox=%s attempt %d (%s)", bbox_swne, attempt + 1, url_now)

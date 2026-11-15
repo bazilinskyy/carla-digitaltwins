@@ -640,6 +640,8 @@ def _write_road(parent, model: TwinModel, road: Road, ids: IdMap, signals: list[
     junction = ids.junction.get(road.junction_id, -1) if road.junction_id else -1
     r = _sub(parent, "road", name=road.name or road.id, length=length, id=str(ids.road[road.id]),
              junction=str(junction))
+    if profiles.get().drives_on == "left":   # left-hand twins (twinmodel.lefthand): positive lanes run along s
+        r.set("rule", "LHT")
     link = _sub(r, "link")
     for tag, rl in (("predecessor", road.predecessor), ("successor", road.successor)):
         if rl is None:

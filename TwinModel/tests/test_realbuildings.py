@@ -36,7 +36,9 @@ def _box(x0, y0, x1, y1, z0, z1):
 def test_choose_provider_by_bbox():
     assert buildings.choose(EHV) == "3dbag"
     assert buildings.choose(MIDTOWN) == "nyc3d"
-    assert buildings.choose((41.38, 2.15, 41.40, 2.18)) is None      # Barcelona: OSM buildings stay
+    assert buildings.choose((41.38, 2.15, 41.40, 2.18)) == "catastro"  # Barcelona: the Spanish Catastro
+    assert buildings.choose((52.50, 13.38, 52.52, 13.41)) is None       # Berlin: no national model (Overture)
+    assert buildings.choose((52.50, 13.38, 52.52, 13.41), include_global=True) == "overture"
     with pytest.raises(KeyError):
         buildings.module("nope")
 

@@ -30,7 +30,16 @@ Sources are tried in order; the first that yields a raster wins. Every source de
    ``maxImageWidth`` 8000). Verified 2026-09-01 on Sunnyvale CA: an 890x700 request at 1 m
    returns a float32 GeoTIFF, 32-40 m a.s.l. Requested at USGS_3DEP_RES mercator-metres then
    warped bilinearly onto the model grid.
-6. ``None`` -> pipeline uses z = 0.
+6. **IGN France RGE ALTI 1 m** (``rge_alti``, Licence Ouverte 2.0) from the Geoplateforme WMS-R as raw float32
+   (``FORMAT=image/x-bil;bits=32``, layer ``ELEVATION.ELEVATIONGRIDCOVERAGE.HIGHRES``, EPSG:2154), no key.
+7. **swisstopo swissALTI3D 0.5 m** (``swissalti3d``, swisstopo open data): the 1 km COG tiles meeting the bbox
+   from the STAC API ``data.geo.admin.ch/api/stac/v0.9`` (EPSG:2056, LN02 heights), read by window.
+8. **GSI Japan DEM** (``gsi_dem``, GSI terms): ``dem5a_png`` z15 (5 m lidar), else ``dem_png`` z14 (10 m).
+9. **AWS Terrain Tiles** (``aws_terrain``, Mapzen Terrarium z15, no key): a global composite (3DEP in the US,
+   national lidar in some countries, SRTM elsewhere), smoothed over 4 px (SRTM is a surface model).
+10. ``None`` -> pipeline uses z = 0.
+
+Each provider is skipped without a request where ``twinmodel.regions.COVERAGE`` says it has no data.
 
 ``fetch_dem(..., sources=(...))`` walks the chain in the given order (the profile's
 ``sources.dem``); provider names: ``icgc_mdt2m``, ``icgc_terr``, ``opentopo``, ``ign_wcs``,
@@ -41,6 +50,7 @@ The result is cached as ``<cache_dir>/dem_<bbox>_<res>m.npz`` (``Elevation.to_np
 """
 from __future__ import annotations
 
+import io
 import logging
 import os
 import re
@@ -72,6 +82,17 @@ IGN_CRS = "EPSG:25830"
 OPENTOPO_URL = "https://portal.opentopography.org/API/globaldem"
 COPERNICUS_AWS = ("https://copernicus-dem-30m.s3.amazonaws.com/"
                   "Copernicus_DSM_COG_10_{lat}_00_{lon}_00_DEM/Copernicus_DSM_COG_10_{lat}_00_{lon}_00_DEM.tif")
+
+RGE_ALTI_WMS = "https://data.geopf.fr/wms-r/wms"
+RGE_ALTI_LAYER = "ELEVATION.ELEVATIONGRIDCOVERAGE.HIGHRES"
+RGE_ALTI_CRS = "EPSG:2154"
+RGE_ALTI_RES = 1.0
+SWISS_STAC = "https://data.geo.admin.ch/api/stac/v0.9/collections/ch.swisstopo.swissalti3d/items"
+GSI_DEM_URLS = (("https://cyberjapandata.gsi.go.jp/xyz/dem5a_png/{z}/{x}/{y}.png", 15),
+                ("https://cyberjapandata.gsi.go.jp/xyz/dem_png/{z}/{x}/{y}.png", 14))
+TERRARIUM_URL = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"
+TERRARIUM_ZOOM = 15
+UA_HEADERS = {"User-Agent": "twinmodel (carla-digitaltwins)"}
 
 USGS_3DEP_URL = ("https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer/"
                  "exportImage")
@@ -374,6 +395,148 @@ def _usgs_3dep(frame: LocalFrame, bbox_swne, grid) -> Optional[Elevation]:
                                     f"({USGS_3DEP_CRS} -> local, bilinear)")
 
 
+# --------------------------------------------------------------------------- national DTMs and the global tiles
+
+def _rge_alti(frame: LocalFrame, bbox_swne, grid) -> Optional[Elevation]:
+    """IGN RGE ALTI 1 m as raw float32 BIL tiles from the Geoplateforme WMS-R (no key); -99999 is no data."""
+    import requests
+    from rasterio.transform import from_bounds
+    from rasterio.warp import transform_bounds
+    x0, y0, width, height, transform = grid
+    xmin, ymin, xmax, ymax = _grid_bounds(transform, width, height)
+    bx0, by0, bx1, by1 = transform_bounds(frame.crs, RGE_ALTI_CRS, xmin, ymin, xmax, ymax, densify_pts=21)
+    pad, tile = 10.0, 2000.0
+    bx0, by0, bx1, by1 = bx0 - pad, by0 - pad, bx1 + pad, by1 + pad
+    z = np.full((height, width), np.nan)
+    session = requests.Session()
+    x = bx0
+    while x < bx1:
+        y = by0
+        while y < by1:
+            tx1, ty1 = min(x + tile, bx1), min(y + tile, by1)
+            w = max(2, int(round((tx1 - x) / RGE_ALTI_RES)))
+            h = max(2, int(round((ty1 - y) / RGE_ALTI_RES)))
+            params = dict(SERVICE="WMS", VERSION="1.3.0", REQUEST="GetMap", LAYERS=RGE_ALTI_LAYER, STYLES="",
+                          CRS=RGE_ALTI_CRS, BBOX=f"{x:.2f},{y:.2f},{tx1:.2f},{ty1:.2f}", WIDTH=w, HEIGHT=h,
+                          FORMAT="image/x-bil;bits=32")
+            r = session.get(RGE_ALTI_WMS, params=params, timeout=120, headers=UA_HEADERS)
+            if r.status_code != 200 or "bil" not in r.headers.get("content-type", ""):
+                log.warning("elevation: RGE ALTI returned %s %s: %s", r.status_code,
+                            r.headers.get("content-type"), r.text[:200])
+                return None
+            arr = np.frombuffer(r.content, dtype="<f4").reshape(h, w).astype(np.float64)
+            arr[(arr < -1000) | (arr > 9000)] = np.nan
+            part = _reproject_to_grid(arr, from_bounds(x, y, tx1, ty1, w, h), RGE_ALTI_CRS, np.nan, transform,
+                                      frame.crs, width, height)
+            hit = np.isfinite(part)
+            z[hit] = part[hit]
+            y = ty1
+        x = tx1
+    if np.isnan(z).mean() > 0.5:
+        return None
+    return _elevation_from_north_up(_fill_nan(z), x0, y0, transform.a,
+                                    "IGN RGE ALTI 1 m via Geoplateforme WMS-R (EPSG:2154, IGN69)")
+
+
+def swissalti3d_assets(bbox_swne, session=None, res: str = "0.5") -> list:
+    """URLs of the swissALTI3D COG tiles (newest year per 1 km tile) meeting the bbox, from the STAC API."""
+    import requests
+    session = session or requests.Session()
+    s, w, n, e = bbox_swne
+    r = session.get(SWISS_STAC, params={"bbox": f"{w},{s},{e},{n}", "limit": 100}, timeout=60, headers=UA_HEADERS)
+    r.raise_for_status()
+    best = {}
+    for f in r.json().get("features", []):
+        m = re.match(r"swissalti3d_(\d{4})_(\d{4}-\d{4})", f.get("id", ""))
+        if not m:
+            continue
+        year, tile = int(m.group(1)), m.group(2)
+        href = next((a["href"] for k, a in f.get("assets", {}).items()
+                     if k.endswith(".tif") and f"_{res}_" in k), None)
+        if href and (tile not in best or year > best[tile][0]):
+            best[tile] = (year, href)
+    return [h for _, h in sorted(best.values(), key=lambda t: t[1])]
+
+
+def _swissalti3d(frame: LocalFrame, bbox_swne, grid) -> Optional[Elevation]:
+    import rasterio
+    from rasterio.warp import transform_bounds
+    from rasterio.windows import from_bounds
+    x0, y0, width, height, transform = grid
+    hrefs = swissalti3d_assets(bbox_swne)
+    if not hrefs:
+        return None
+    xmin, ymin, xmax, ymax = _grid_bounds(transform, width, height)
+    z = np.full((height, width), np.nan)
+    with rasterio.Env(GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR", CPL_VSIL_CURL_ALLOWED_EXTENSIONS=".tif"):
+        for href in hrefs:
+            with rasterio.open("/vsicurl/" + href) as ds:
+                bx0, by0, bx1, by1 = transform_bounds(frame.crs, ds.crs, xmin, ymin, xmax, ymax, densify_pts=21)
+                bx0, by0 = max(bx0 - 5, ds.bounds.left), max(by0 - 5, ds.bounds.bottom)
+                bx1, by1 = min(bx1 + 5, ds.bounds.right), min(by1 + 5, ds.bounds.top)
+                if bx1 <= bx0 or by1 <= by0:
+                    continue
+                win = from_bounds(bx0, by0, bx1, by1, ds.transform)
+                arr = ds.read(1, window=win).astype(np.float64)
+                part = _reproject_to_grid(arr, ds.window_transform(win), ds.crs, ds.nodata, transform, frame.crs,
+                                          width, height)
+            hit = np.isfinite(part)
+            z[hit] = part[hit]
+    if np.isnan(z).mean() > 0.5:
+        return None
+    return _elevation_from_north_up(_fill_nan(z), x0, y0, transform.a,
+                                    f"swisstopo swissALTI3D 0.5 m COG ({len(hrefs)} tiles, LN02)")
+
+
+def decode_terrarium(data: bytes) -> np.ndarray:
+    from PIL import Image
+    a = np.asarray(Image.open(io.BytesIO(data)).convert("RGB"), dtype=np.float64)
+    return (a[..., 0] * 256 + a[..., 1] + a[..., 2] / 256 - 32768)[None]
+
+
+def decode_gsi_png(data: bytes) -> np.ndarray:
+    """GSI elevation PNG: x = R*65536 + G*256 + B, h = x * 0.01 m (x >= 2^23: x - 2^24; 2^23 = no data)."""
+    from PIL import Image
+    a = np.asarray(Image.open(io.BytesIO(data)).convert("RGB"), dtype=np.float64)
+    x = a[..., 0] * 65536 + a[..., 1] * 256 + a[..., 2]
+    h = np.where(x < 2 ** 23, x, x - 2 ** 24) * 0.01
+    h[x == 2 ** 23] = np.nan
+    return h[None]
+
+
+def _xyz_dem(frame: LocalFrame, bbox_swne, grid, url: str, zoom: int, smooth_px: int, label: str):
+    from .imagery import xyz_mosaic
+    arr, tf = xyz_mosaic(url, zoom, bbox_swne, decode_terrarium if "terrarium" in url else decode_gsi_png)
+    if arr is None:
+        return None
+    z0 = arr[0]
+    if smooth_px:
+        from scipy import ndimage
+        z0 = ndimage.uniform_filter(_fill_nan(z0), size=2 * smooth_px + 1, mode="nearest")
+    x0, y0, width, height, transform = grid
+    z = _reproject_to_grid(z0, tf, "EPSG:3857", np.nan, transform, frame.crs, width, height)
+    if np.isnan(z).mean() > 0.5:
+        return None
+    return _elevation_from_north_up(_fill_nan(z), x0, y0, transform.a, label)
+
+
+def _aws_terrain(frame: LocalFrame, bbox_swne, grid) -> Optional[Elevation]:
+    return _xyz_dem(frame, bbox_swne, grid, TERRARIUM_URL, TERRARIUM_ZOOM, 4,
+                    f"AWS Terrain Tiles (Terrarium z{TERRARIUM_ZOOM}; SRTM/3DEP/national lidar), smoothed 4 px")
+
+
+def _gsi_dem(frame: LocalFrame, bbox_swne, grid) -> Optional[Elevation]:
+    for url, zoom in GSI_DEM_URLS:
+        try:
+            el = _xyz_dem(frame, bbox_swne, grid, url, zoom, 0, f"GSI DEM tiles {url.split('/')[-4]} z{zoom}")
+        except Exception as exc:  # noqa: BLE001 - the coarser tiles
+            log.warning("elevation: GSI %s failed (%s)", url, exc)
+            el = None
+        if el is not None:
+            return el
+    return None
+
+
 # --------------------------------------------------------------------------- public API
 
 # name -> provider(frame, bbox_swne, grid, sample_spacing) -> Elevation | None
@@ -385,6 +548,10 @@ PROVIDERS = {
     "ahn_wcs": lambda frame, bbox, grid, spacing: _ahn_wcs(frame, bbox, grid),
     "copernicus_aws": lambda frame, bbox, grid, spacing: _copernicus_aws(frame, bbox, grid),
     "usgs_3dep": lambda frame, bbox, grid, spacing: _usgs_3dep(frame, bbox, grid),
+    "rge_alti": lambda frame, bbox, grid, spacing: _rge_alti(frame, bbox, grid),
+    "swissalti3d": lambda frame, bbox, grid, spacing: _swissalti3d(frame, bbox, grid),
+    "gsi_dem": lambda frame, bbox, grid, spacing: _gsi_dem(frame, bbox, grid),
+    "aws_terrain": lambda frame, bbox, grid, spacing: _aws_terrain(frame, bbox, grid),
 }
 
 def _cache_path(cache_dir: Path, bbox_swne, res: float) -> Path:
@@ -425,6 +592,10 @@ def fetch_dem(frame: LocalFrame, bbox_swne: tuple[float, float, float, float],
         fn = PROVIDERS.get(name)
         if fn is None:
             log.warning("elevation: unknown source %r (known: %s)", name, sorted(PROVIDERS))
+            continue
+        from ..regions import covers
+        if not covers(name, bbox_swne):
+            log.info("elevation: %s does not cover %s; skipped", name, tuple(bbox_swne))
             continue
         try:
             el = fn(frame, bbox_swne, grid, sample_spacing)

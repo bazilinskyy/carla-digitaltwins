@@ -9,6 +9,14 @@ provider that covers the twin's bbox; a new country or city is one more module a
 | ``3dbag`` | the Netherlands | 3DBAG LoD 2.2 (CC BY 4.0) + BAG uses (CC0) |
 | ``nyc3d`` | New York City | NYC 3D Building Model LoD 2 + Building Footprints + PLUTO (NYC Open Data) |
 | ``plateau`` | Japanese cities in ``buildings_plateau.DATASETS`` (Shibuya) | PLATEAU CityGML LoD 2 / LoD 1 (MLIT) |
+| ``catastro`` | Spain (not the Basque Country, Navarre) | Catastro INSPIRE buildings: floors per part, year, use (CC BY 4.0) |
+| ``bdtopo`` | France | IGN BD TOPO: ground, eaves and ridge heights, floors, year, use (Licence Ouverte 2.0) |
+| ``overture`` | everywhere | Overture Maps: height, floors, roof shape, class (ODbL / CDLA Permissive 2.0; needs duckdb) |
+| ``osm`` | everywhere, offline | the twin's own OSM footprints with height, levels and roof:shape (ODbL) |
+
+The last four have footprints and heights, not 3D models: twinmodel.ingest.buildings_extrude makes prisms with
+roof shapes. ``candidates`` lists every provider covering a bbox in order, so a caller can fall back to the next
+when one fails (no network, no duckdb, a service down).
 """
 from __future__ import annotations
 
@@ -20,7 +28,12 @@ PROVIDERS = {
     "3dbag": "buildings_3dbag",
     "nyc3d": "buildings_nyc",
     "plateau": "buildings_plateau",
+    "catastro": "buildings_catastro",
+    "bdtopo": "buildings_bdtopo",
+    "overture": "buildings_overture",
+    "osm": "buildings_osm",
 }
+GLOBAL = ("overture", "osm")   # cover everywhere: never chosen over a national model
 
 
 def module(name: str):
@@ -38,9 +51,17 @@ def covers(name: str, bbox_swne) -> bool:
     return inside and (mod.covers(bbox_swne) if hasattr(mod, "covers") else True)
 
 
-def choose(bbox_swne) -> Optional[str]:
-    """The first provider whose coverage holds the bbox, or None (the twin keeps its OSM buildings)."""
-    return next((p for p in PROVIDERS if covers(p, bbox_swne)), None)
+def candidates(bbox_swne, order=None) -> list:
+    """Every provider covering the bbox, in ``order`` (default PROVIDERS' order, the global ones last)."""
+    names = list(order) if order else list(PROVIDERS)
+    names = [n for n in names if n in PROVIDERS]
+    return [p for p in names if covers(p, bbox_swne)]
+
+
+def choose(bbox_swne, include_global: bool = False) -> Optional[str]:
+    """The first provider whose coverage holds the bbox, or None (the twin keeps its OSM buildings); the global
+    providers (Overture, OSM) only with ``include_global``."""
+    return next((p for p in candidates(bbox_swne) if include_global or p not in GLOBAL), None)
 
 
 def load(name: str, build, man: dict, looks: bool = True, **opts):

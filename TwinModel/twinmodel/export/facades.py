@@ -88,12 +88,20 @@ STYLES = {s.name: s for s in (
     Style("stone_prewar", 1.8, 3.4, "brick", ((196, 184, 160), (172, 150, 118), (150, 112, 86)),
           window=(0.26, 0.74, 0.24, 0.84), frame=(225, 222, 212), mullions=0, transom=True,
           mortar=(205, 200, 188), brick_m=(0.60, 0.30)),
+    # southern Europe and Latin America, before 1940: sandstone or limestone ashlar, tall balcony doors
+    # (Salamanca's golden Villamayor stone, Paris and Madrid limestone, grey granite)
+    Style("stone_old", 2.2, 3.4, "brick", ((206, 170, 112), (214, 200, 172), (168, 160, 150)),
+          window=(0.30, 0.70, 0.06, 0.82), frame=(92, 70, 52), mullions=1, transom=False,
+          mortar=(196, 186, 166), brick_m=(0.70, 0.35)),
+    # southern homes and blocks after 1940: warm render (cream, ochre, terracotta), shutters' dark frames
+    Style("render_warm", 3.0, 3.0, "render", ((232, 214, 178), (214, 168, 112), (196, 128, 92)),
+          window=(0.22, 0.78, 0.12, 0.86), frame=(70, 66, 58), mullions=1, sill=True),
     # party walls, narrow walls, sheds: plain wall at true brick scale
     Style("blank_brick", 2.5, 3.0, "brick", ((132, 60, 44), (110, 80, 62)), blank=True, sill=False),
 )}
 
 # style -> the plain wall its party walls get
-BLANK_OF = {"stone_prewar": "blank_brick",
+BLANK_OF = {"stone_prewar": "blank_brick", "stone_old": "blank_brick", "render_warm": "blank_brick",
             "render_modern": "blank_brick", "office_concrete": "blank_brick", "office_glass": "blank_brick",
             "industrial": "industrial", "shopfront": "blank_brick"}
 
@@ -133,7 +141,8 @@ class BuildingInfo:
     height_m: float = 0.0                      # ground to eaves
     area_m2: float = 0.0                       # footprint
     osm_category: Optional[str] = None
-    region: str = "nl"                         # "us": pre-war high-rise is stone; "jp": homes are rendered
+    region: str = "nl"                         # "us": pre-war high-rise is stone; "jp": homes are rendered;
+                                               # "south": stone before 1940, warm render after (no brick)
 
 
 def dominant_use(uses: dict) -> Optional[str]:
@@ -169,6 +178,12 @@ def classify(b: BuildingInfo) -> tuple[str, bool]:
     # homes and mixed blocks
     if b.region == "jp":
         return "render_modern", shop_floor   # Japanese homes and apartment blocks: render and tiles, not brick
+    if b.region == "south":
+        if 0 < year < 1940:
+            return "stone_old", shop_floor
+        if year == 0 and _crc("south", b.id) % 4 == 0:
+            return "stone_old", shop_floor   # no year (Overture, OSM): a quarter of the old stock
+        return "render_warm", shop_floor
     if 0 < year < 1940:
         return "brick_old", shop_floor
     if year < 1980:
@@ -459,7 +474,7 @@ LIGHT_COOL_SHARE = 0.12   # lit windows with cool white light (LED, screens) ins
 # facade style -> building use whose lit share the material gets (ue/twin_materials.py WINDOW_LIT_SHARE).
 # The styles come from the BAG use of the units (classify): homes and mixed blocks, offices (also
 # schools, hospitals, hotels), the shopfront ground floor, industry; plain walls have no windows.
-USE_OF_STYLE = {"stone_prewar": "home", "brick_old": "home", "brick_postwar": "home", "brick_modern": "home", "render_modern": "home",
+USE_OF_STYLE = {"stone_prewar": "home", "stone_old": "home", "render_warm": "home", "brick_old": "home", "brick_postwar": "home", "brick_modern": "home", "render_modern": "home",
                 "office_concrete": "office", "office_glass": "office", "shopfront": "shop",
                 "industrial": "industry"}
 

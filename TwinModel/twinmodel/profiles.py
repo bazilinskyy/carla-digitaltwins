@@ -110,6 +110,9 @@ class CrossingRules:
     z: float
     keep_m: float              # crossing stays whole on its road: cut >= this past the node
     near_cut_m: float          # crossing nodes this close to a trim cut pull the cut back
+    # zebras also along OSM's crossing *ways* (footway=crossing) where no node crossing covers them: inside
+    # junctions, e.g. the diagonals of a scramble crossing (Shibuya); off by default (pinned builds)
+    from_ways: bool = False
 
 
 @dataclass(frozen=True)
@@ -661,7 +664,34 @@ NL_URBAN = EU_DENSE.with_(
     building=dataclasses.replace(EU_DENSE.building, level_height_m=3.0, default_levels=3),
 )
 
-PROFILES: dict[str, StreetProfile] = {p.name: p for p in (NL_URBAN, EU_DENSE, US_URBAN, US_SUBURBAN)}
+# Japan: left-hand traffic (the lane graph is built mirrored, twinmodel.lefthand), Road Structure Ordinance lanes
+# (urban class 4: 3.0-3.25 m; 3.25 m kept for CARLA's 2.9 m fire truck, expressways 3.5 m), narrow sidewalks,
+# white markings everywhere (centre and lane lines white, 5 m dashes and gaps; yellow means no passing and is not
+# inferred), 0.15 m lines, 4 m zebras (the scramble's diagonals come from OSM's crossing ways), GSI photo and DEM.
+_JP_CLASSES = {k: (replace(v, lane_width=3.25) if v.lane_width > 3.25 and not k.startswith(("motorway", "trunk"))
+                   else v)
+               for k, v in _EU_CLASSES.items()}
+_JP_CLASSES.update({"residential": ClassDefaults(3.0, 2, 1.5, center_marking=False),
+                    "living_street": ClassDefaults(3.0, 1, 1.0, center_marking=False),
+                    "service": ClassDefaults(3.0, 1, None, center_marking=False)})
+JP_URBAN = EU_DENSE.with_(
+    name="jp_urban",
+    signal_country="JP",
+    description="Japanese towns: left-hand traffic, 3.0-3.25 m lanes, white centre and lane lines, 4 m zebras, "
+                "GSI aerial photo and DEM",
+    countries=frozenset({"JP"}),
+    drives_on="left",
+    lane=replace(EU_DENSE.lane, classes=_JP_CLASSES, fallback=ClassDefaults(3.25, 2, 1.5), min_width=3.1,
+                 max_width=3.75, canyon_max_width=3.5),
+    sidewalk=replace(EU_DENSE.sidewalk, min_width=1.0, max_width=6.0),
+    marking=MarkingRules(width=0.15, center_color="white", lane_color="white", edge_color="white",
+                         broken_dash=5.0, broken_gap=5.0, z=0.002),
+    crossing=replace(EU_DENSE.crossing, width=4.0, from_ways=True),
+    sources=DataSources(ortho=("gsi_photo", "osm_tiles"), dem=("gsi_dem", "aws_terrain", "copernicus_aws")),
+    building=dataclasses.replace(EU_DENSE.building, level_height_m=3.2, default_levels=3),
+)
+
+PROFILES: dict[str, StreetProfile] = {p.name: p for p in (NL_URBAN, EU_DENSE, US_URBAN, US_SUBURBAN, JP_URBAN)}
 
 US_DENSITY_THRESHOLD = 0.30   # building footprint area / land area above this -> us_urban
 

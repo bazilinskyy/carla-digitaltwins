@@ -38,6 +38,10 @@ ORTHO_CREDITS = {
     "icgc": "ICGC orthophoto (CC BY 4.0)",
     "ign_es": "IGN PNOA (CC BY 4.0)",
     "osm_tiles": "OpenStreetMap tiles (ODbL)",
+    "ign_fr": "IGN BD ORTHO (Licence Ouverte 2.0)",
+    "swissimage": "swisstopo SWISSIMAGE (swisstopo open data)",
+    "flanders": "Digitaal Vlaanderen orthophoto (Modellicentie Gratis Hergebruik)",
+    "gsi_photo": "GSI Japan seamless photo (GSI terms, CC BY 4.0 compatible)",
 }
 
 
@@ -58,6 +62,9 @@ class RealBuilding:
     parts: int = 1
     centre: Optional[tuple] = None     # (x, y) that picks the tile; default the mean of the surface points
     region: str = "nl"                 # facades.BuildingInfo.region
+    # the source's own photo textures: surface index -> (image file, [(n, 2) texture coordinates per ring],
+    # CityGML convention: origin bottom left); apply packs them into one atlas per tile
+    textures: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -275,6 +282,67 @@ class _Builder:
         return np.vstack(self.pos), np.vstack(self.nrm), np.vstack(self.uv), np.vstack(self.faces)
 
 
+ATLAS_PX = 4096      # one photo-texture atlas per tile (PLATEAU's LoD 2 facade and roof photos)
+ATLAS_GUTTER = 2
+
+
+def pack_atlas(sizes: list, atlas_px: int = ATLAS_PX, gutter: int = ATLAS_GUTTER):
+    """Shelf-pack images of ``sizes`` [(w, h)] into a square atlas: (scale, [(x, y, w, h)] placements in atlas
+    pixels). The images are scaled down together until they fit."""
+    if not sizes:
+        return 1.0, []
+    area = sum((w + 2 * gutter) * (h + 2 * gutter) for w, h in sizes)
+    scale = min(1.0, math.sqrt(0.85 * atlas_px * atlas_px / max(area, 1)))
+    order = sorted(range(len(sizes)), key=lambda i: -sizes[i][1])
+    for _ in range(40):
+        place = [None] * len(sizes)
+        x = y = shelf = 0
+        ok = True
+        for i in order:
+            w = max(1, int(sizes[i][0] * scale))
+            h = max(1, int(sizes[i][1] * scale))
+            if x + w + 2 * gutter > atlas_px:
+                x, y, shelf = 0, y + shelf, 0
+            if y + h + 2 * gutter > atlas_px or w + 2 * gutter > atlas_px:
+                ok = False
+                break
+            place[i] = (x + gutter, y + gutter, w, h)
+            x += w + 2 * gutter
+            shelf = max(shelf, h + 2 * gutter)
+        if ok:
+            return scale, place
+        scale *= 0.9
+    raise ValueError("cannot pack %d images into %d px" % (len(sizes), atlas_px))
+
+
+def build_atlas(paths: list, atlas_px: int = ATLAS_PX, gutter: int = ATLAS_GUTTER):
+    """(atlas image HxWx3 uint8, [(x, y, w, h)] per path): the images packed, with their edges repeated into
+    the gutter so mipmaps do not bleed."""
+    from PIL import Image
+    imgs = []
+    for pth in paths:
+        try:
+            imgs.append(Image.open(pth).convert("RGB"))
+        except Exception:  # noqa: BLE001 - a broken file: a grey square
+            imgs.append(Image.new("RGB", (8, 8), (128, 128, 128)))
+    scale, place = pack_atlas([im.size for im in imgs], atlas_px, gutter)
+    atlas = np.zeros((atlas_px, atlas_px, 3), np.uint8)
+    for im, (x, y, w, h) in zip(imgs, place):
+        a = np.asarray(im.resize((w, h), Image.BILINEAR) if (w, h) != im.size else im)
+        a = np.pad(a, ((gutter, gutter), (gutter, gutter), (0, 0)), mode="edge")
+        atlas[y - gutter:y + h + gutter, x - gutter:x + w + gutter] = a
+    return atlas, place
+
+
+def atlas_uv(uv: np.ndarray, rect, atlas_px: int = ATLAS_PX) -> np.ndarray:
+    """CityGML texture coordinates (origin bottom left, 0-1 over the image) -> glTF UVs (origin top left) in the
+    atlas, kept half a pixel inside the image's rectangle."""
+    x, y, w, h = rect
+    u = np.clip(uv[:, 0], 0.5 / w, 1 - 0.5 / w)
+    v = np.clip(uv[:, 1], 0.5 / h, 1 - 0.5 / h)
+    return np.column_stack([(x + u * w) / atlas_px, (y + (1.0 - v) * h) / atlas_px])
+
+
 def apply(build: Path, man: dict, buildings: list, source: Source, *, looks: bool = True,
           ortho=None, ortho_label: str = "", texture_px: Optional[int] = None, roof_px: int = 1024,
           procedural_min_height: Optional[float] = None, window_lights: bool = True) -> dict:
@@ -328,6 +396,8 @@ def apply(build: Path, man: dict, buildings: list, source: Source, *, looks: boo
 
     # ---- meshes
     tiles = defaultdict(lambda: defaultdict(_Builder))   # tile -> (material key, low) -> builder
+    photo = defaultdict(lambda: {"images": {}, "parts": []})   # tile -> the source's photo-textured surfaces
+    n_textured = 0
     used_keys = set()
     n_buildings = n_parts = n_tris = n_party = n_plain_roof = 0
     boundaries = [p.exterior if p is not None and not p.is_empty else None for p in polys]
@@ -359,7 +429,7 @@ def apply(build: Path, man: dict, buildings: list, source: Source, *, looks: boo
                         if j != k and boundaries[j] is not None]
         used = False
         n_wall = 0
-        for rings, kind in b.surfaces:
+        for si, (rings, kind) in enumerate(b.surfaces):
             if kind in SKIP_SURFACES or not rings:
                 continue
             res = triangulate(rings)
@@ -369,6 +439,13 @@ def apply(build: Path, man: dict, buildings: list, source: Source, *, looks: boo
             n_tris += len(tri)
             tb = tiles[tile]
             used = True
+            if looks and si in b.textures:   # the source's own photo: into the tile's atlas
+                img, uvs = b.textures[si]
+                ph = photo[tile]
+                idx = ph["images"].setdefault(img, len(ph["images"]))
+                ph["parts"].append((v, normal, np.vstack(uvs), idx, tri))
+                n_textured += 1
+                continue
 
             def add_wall(mkey, v, tri, uvfn):
                 """Walls below the eaves of a procedural-capable building go apart (kind
@@ -423,6 +500,19 @@ def apply(build: Path, man: dict, buildings: list, source: Source, *, looks: boo
             n_buildings += 1
             n_plain_roof += int(looks and ortho is not None and not photo_roof)
 
+    # ---- the source's photo textures: one atlas per tile
+    atlases = {}
+    for tile, ph in sorted(photo.items()):
+        if not ph["parts"]:
+            continue
+        paths = [p for p, _ in sorted(ph["images"].items(), key=lambda t: t[1])]
+        atlas, place = build_atlas(paths)
+        key = "photo_%d_%d" % tile
+        for v, normal, uv, idx, tri in ph["parts"]:
+            tiles[tile][(key, False)].add(v, normal, atlas_uv(uv, place[idx]), tri)
+        used_keys.add(key)
+        atlases[key] = atlas
+
     # ---- textures
     tex_dir = out / "textures"
     # entries of other tools stay (tools/ground_photo.py: ground_<x>_<y>)
@@ -449,6 +539,14 @@ def apply(build: Path, man: dict, buildings: list, source: Source, *, looks: boo
                              windows_uv_scale=facades.MASK_UV_SCALE)
                 n_lights += 1
             textures[key] = entry
+        for key, atlas in sorted(atlases.items()):
+            from PIL import Image
+            rel = f"textures/T_{name}_{key}_d.jpg"
+            Image.fromarray(atlas).save(out / rel, quality=90)
+            facades.save_png(out / f"textures/T_{name}_flat_n.png", facades.flat_normal())
+            facades.save_png(out / f"textures/T_{name}_photo_orm.png", facades.constant_orm(0.85))
+            textures[key] = {"base_color": rel, "normal": f"textures/T_{name}_flat_n.png",
+                             "orm": f"textures/T_{name}_photo_orm.png", "source": source.asset_source}
         if ortho:
             facades.save_png(out / f"textures/T_{name}_flat_n.png", facades.flat_normal())
             facades.save_png(out / f"textures/T_{name}_roof_orm.png", facades.constant_orm(0.8))
@@ -485,6 +583,8 @@ def apply(build: Path, man: dict, buildings: list, source: Source, *, looks: boo
             is_roof = key.startswith("roof")
             if key == "building":
                 asset = f"{name}_L0_building_{tx}_{ty}"
+            elif key.startswith("photo_"):
+                asset = f"{name}_L0_building_{tx}_{ty}_photo"
             else:
                 asset = f"{name}_L0_{'roof' if is_roof else 'building'}_{tx}_{ty}" + \
                         ("" if is_roof else "_" + key[len("facade_"):] + ("_p" if low else ""))
@@ -550,6 +650,9 @@ def apply(build: Path, man: dict, buildings: list, source: Source, *, looks: boo
         if source.roof_photo_max_m is not None and ortho is not None:
             man["stats"]["roof_plain_tall"] = n_plain_roof
         man["stats"]["procedural_capable"] = sum(1 for i in info if i.get("procedural"))
+        if n_textured:
+            man["stats"]["photo_textured_surfaces"] = n_textured
+            man["stats"]["photo_atlases"] = len(atlases)
         man["stats"].update(source.extra_stats)
     man["stats"]["triangles"] = int(sum(a["triangles"] for a in assets))
     (out / "manifest.json").write_text(json.dumps(man, indent=1))

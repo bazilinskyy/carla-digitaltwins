@@ -12,3 +12,4 @@ __pycache__/
 
 # Cooked distribution archives and local binary verification packages
 /dist/
+build/

@@ -854,7 +854,16 @@ def select_profile(choice: str, osm, frame: LocalFrame, bbox: tuple[float, float
         return p, {"name": p.name, "source": "cli", "iso2": None, "building_coverage": coverage}
     iso2 = country_for_bbox(bbox, cache_dir)
     p = profiles.choose_for_country(iso2, coverage)
-    return p, {"name": p.name, "source": "auto", "iso2": iso2, "building_coverage": coverage}
+    # the country's best open data first (twinmodel.regions): national photo and terrain, global fallbacks
+    from . import regions
+    plan = regions.plan_for(iso2, bbox)
+    p = p.with_(sources=profiles.DataSources(ortho=plan.ortho, dem=plan.dem))
+    if plan.lefthand and p.drives_on != "left":   # e.g. the UK or Australia on eu_dense: left-hand lanes
+        p = p.with_(drives_on="left")
+    for note in plan.notes:
+        log.warning("region: %s", note)
+    return p, {"name": p.name, "source": "auto", "iso2": iso2, "building_coverage": coverage,
+               "region_plan": plan.as_dict()}
 
 
 def _call_with_sources(fn: Callable, *args, sources: tuple[str, ...], **kw):
@@ -950,13 +959,27 @@ def _build_pipeline(args: argparse.Namespace, osm, bbox, frame: LocalFrame, out:
     corr_reports = corr_reports if corr_reports is not None else {}
     quick = bool(getattr(args, "quick", False))
     with timer.stage("lanegraph"):
-        model = build_lanegraph(osm, frame, bbox, name=args.name,
-                                end_shifts=corrections_mod.end_shifts(ops) or None)
+        if P.drives_on == "left":
+            # left-hand traffic (twinmodel.lefthand): the right-hand lane graph of the mirror image, mirrored back
+            from . import lefthand
+            import copy
+            mirrored = lefthand.mirror_osm(copy.deepcopy(osm), frame.origin_lon)
+            with profiles.use(P.with_(drives_on="right")):
+                model = build_lanegraph(mirrored, frame, bbox, name=args.name, end_shifts=None)
+            lh = lefthand.mirror_model(model)
+            log.info("left-hand traffic: lane graph built mirrored and mirrored back (%s)", lh)
+            ops = []   # reviewer corrections are not mirrored: not applied
+        else:
+            model = build_lanegraph(osm, frame, bbox, name=args.name,
+                                    end_shifts=corrections_mod.end_shifts(ops) or None)
         if ops:
             corr_reports["lanegraph"] = corrections_mod.apply_junctions(model, ops, frame)
             n_shift = sum(1 for r in model.roads for e in ("start", "end") if f"end_shift_{e}" in r.tags)
             corr_reports["lanegraph"]["road_ends_shifted"] = n_shift
         model.metadata["profile"] = dict(profile_meta)
+        if P.crossing.from_ways:
+            from .surfaces import crossing_ways
+            model.metadata["crossing_ways_wkt"] = crossing_ways(osm, frame)
         log.info("lanegraph: %d roads, %d junctions, %d signals, %d buildings",
                  len(model.roads), len(model.junctions), len(model.signals), len(model.buildings))
 
@@ -1337,6 +1360,8 @@ def _build_parser() -> argparse.ArgumentParser:
     refresh_mod.add_parser(sub)
     from .project import add_parser as add_project_parser
     add_project_parser(sub)
+    from .twin import add_parser as add_twin_parser   # a place -> a baked twin, any country (twinmodel.twin)
+    add_twin_parser(sub)
     return ap
 
 

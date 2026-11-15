@@ -31,8 +31,19 @@ Providers (names understood by ``profiles.DataSources.ortho``):
   ``https://orthos.its.ny.gov/arcgis/rest/services/wms/Latest/MapServer/export`` (JPEG, EPSG:3857,
   4096 px cap). Declines (returns ``None``) outside New York State, so a US profile can list it
   first. Not a true ortho: tall buildings lean away from the photo centre.
+* ``ign_fr`` — IGN France BD ORTHO 20 cm (Licence Ouverte 2.0), Geoplateforme WMS-R
+  ``https://data.geopf.fr/wms-r/wms`` layer ``HR.ORTHOIMAGERY.ORTHOPHOTOS`` (JPEG, EPSG:2154, no key).
+* ``swissimage`` — swisstopo SWISSIMAGE 10 cm (swisstopo open data), ``https://wms.geo.admin.ch/`` layer
+  ``ch.swisstopo.swissimage`` (JPEG, EPSG:2056).
+* ``flanders`` — Digitaal Vlaanderen orthophoto mosaic (OMW, 25 cm, Modellicentie Gratis Hergebruik),
+  ``https://geo.api.vlaanderen.be/omw/wms`` layers ``OMWRGB25VL`` (newest first; EPSG:31370). Flanders only.
+* ``gsi_photo`` — GSI Japan seamless photo tiles z18 (GSI terms, compatible with CC BY 4.0),
+  ``https://cyberjapandata.gsi.go.jp/xyz/seamlessphoto/{z}/{x}/{y}.jpg``.
 * ``osm_tiles`` — openstreetmap-carto z19 tiles (``osmtiles.fetch_osm_tiles``), a last-resort
   *visual* layer, not imagery.
+
+Each provider is skipped without a request where ``twinmodel.regions.COVERAGE`` says it has no data, and an
+answer that is mostly blank (a service answering white or black outside its area) counts as no answer.
 
 All providers request tiles in their native CRS then ``rasterio.warp.reproject`` into the
 regular model grid (``model_grid``; rows increase with y — south-up — like ``Elevation``).
@@ -225,6 +236,21 @@ NYS_CRS = "EPSG:3857"
 NYS_RES = 0.2            # request resolution in EPSG:3857 units (~0.15 m ground at 41 N, the NYC product)
 NYS_MAX_PX = 4096
 NYS_BBOX = (40.49, -79.77, 45.02, -71.85)   # (s, w, n, e) of New York State
+IGN_FR_WMS = "https://data.geopf.fr/wms-r/wms"
+IGN_FR_LAYER = "HR.ORTHOIMAGERY.ORTHOPHOTOS"
+IGN_FR_CRS = "EPSG:2154"
+IGN_FR_RES = 0.20
+SWISS_WMS = "https://wms.geo.admin.ch/"
+SWISS_LAYER = "ch.swisstopo.swissimage"
+SWISS_CRS = "EPSG:2056"
+SWISS_RES = 0.10
+FLANDERS_WMS = "https://geo.api.vlaanderen.be/omw/wms"
+FLANDERS_LAYERS = ("OMWRGB25VL", "OMWRGB24VL", "OMWRGB23VL")   # winter flights, newest first
+FLANDERS_CRS = "EPSG:31370"
+FLANDERS_RES = 0.25
+GSI_PHOTO_URL = "https://cyberjapandata.gsi.go.jp/xyz/seamlessphoto/{z}/{x}/{y}.jpg"
+GSI_PHOTO_ZOOM = 18
+UA_HEADERS = {"User-Agent": "twinmodel (carla-digitaltwins)"}
 DEFAULT_SOURCES: tuple[str, ...] = ("icgc", "ign_es", "osm_tiles")
 
 
@@ -474,6 +500,118 @@ def _fetch_osm_tiles(frame: LocalFrame, bbox_swne, resolution: float, grid, cach
     return img
 
 
+def _wms_jpeg_provider(name: str, url: str, layers, crs: str, native: float, label: str):
+    """A provider for a WMS that serves JPEG (tried layer by layer, newest first)."""
+    layers = (layers,) if isinstance(layers, str) else tuple(layers)
+
+    def fetch(frame: LocalFrame, bbox_swne, resolution: float, grid, **_) -> Optional[OrthoImage]:
+        import requests
+        session = requests.Session()
+        session.headers.update(UA_HEADERS)
+        last = None
+        for layer in layers:
+            try:
+                dst = _mosaic_tiles(frame, grid, resolution, crs, max(native, resolution), TILE_PX,
+                                    lambda bbox, w, h: _getmap_jpeg_as_tiff(session, layer, crs, bbox, w, h, url))
+            except Exception as exc:  # noqa: BLE001 - the next layer
+                last = exc
+                log.warning("imagery: %s layer %s failed (%s)", name, layer, exc)
+                continue
+            if dst is not None:
+                return _to_image(dst, grid, resolution, name, f"{label} {layer} ({crs} -> local)")
+        if last is not None:
+            raise last
+        return None
+    fetch.__name__ = f"_fetch_{name}"
+    return fetch
+
+
+_fetch_ign_fr = _wms_jpeg_provider("ign_fr", IGN_FR_WMS, IGN_FR_LAYER, IGN_FR_CRS, IGN_FR_RES,
+                                   "IGN BD ORTHO WMS-R")
+_fetch_swissimage = _wms_jpeg_provider("swissimage", SWISS_WMS, SWISS_LAYER, SWISS_CRS, SWISS_RES,
+                                       "swisstopo SWISSIMAGE WMS")
+_fetch_flanders = _wms_jpeg_provider("flanders", FLANDERS_WMS, FLANDERS_LAYERS, FLANDERS_CRS, FLANDERS_RES,
+                                     "Digitaal Vlaanderen OMW WMS")
+
+
+def xyz_tile_range(bbox_swne, zoom: int):
+    """(x0, y0, x1, y1) of the web-mercator tiles meeting the bbox (inclusive)."""
+    import math
+    s, w, n, e = bbox_swne
+
+    def xy(lat, lon):
+        nt = 2 ** zoom
+        x = (lon + 180.0) / 360.0 * nt
+        y = (1.0 - math.log(math.tan(math.radians(lat)) + 1 / math.cos(math.radians(lat))) / math.pi) / 2.0 * nt
+        return int(x), int(y)
+    x0, y0 = xy(n, w)
+    x1, y1 = xy(s, e)
+    return x0, y0, x1, y1
+
+
+def xyz_mosaic(url_tpl: str, zoom: int, bbox_swne, decode, bands: int = 3, session=None, pad: int = 1):
+    """Fetch the XYZ tiles over the bbox (plus ``pad`` tiles) and stitch them: (array (bands, H, W), the
+    EPSG:3857 transform). ``decode(bytes) -> (bands, 256, 256)``; a missing tile (404) stays zero/NaN."""
+    import requests
+    from rasterio.transform import from_origin
+    session = session or requests.Session()
+    x0, y0, x1, y1 = xyz_tile_range(bbox_swne, zoom)
+    x0, y0, x1, y1 = x0 - pad, y0 - pad, x1 + pad, y1 + pad
+    nx, ny = x1 - x0 + 1, y1 - y0 + 1
+    if nx * ny > 900:
+        raise RuntimeError(f"{nx * ny} tiles at zoom {zoom}: the area is too large for this source")
+    out = None
+    got = 0
+    for ty in range(y0, y1 + 1):
+        for tx in range(x0, x1 + 1):
+            r = session.get(url_tpl.format(z=zoom, x=tx, y=ty), timeout=REQUEST_TIMEOUT, headers=UA_HEADERS)
+            if r.status_code == 404:
+                continue
+            r.raise_for_status()
+            a = decode(r.content)
+            if out is None:
+                out = np.full((a.shape[0], ny * 256, nx * 256), np.nan if a.dtype.kind == "f" else 0, dtype=a.dtype)
+            out[:, (ty - y0) * 256:(ty - y0 + 1) * 256, (tx - x0) * 256:(tx - x0 + 1) * 256] = a
+            got += 1
+    if out is None:
+        return None, None
+    world = 2 * 20037508.342789244
+    px = world / (2 ** zoom) / 256
+    transform = from_origin(-world / 2 + x0 * 256 * px, world / 2 - y0 * 256 * px, px, px)
+    log.info("xyz: %d of %d tiles at zoom %d from %s", got, nx * ny, zoom, url_tpl.split("/{z}")[0])
+    return out, transform
+
+
+def _decode_rgb(data: bytes) -> np.ndarray:
+    from PIL import Image
+    return np.moveaxis(np.asarray(Image.open(io.BytesIO(data)).convert("RGB"), dtype=np.uint8), -1, 0)
+
+
+def _fetch_gsi_photo(frame: LocalFrame, bbox_swne, resolution: float, grid, **_) -> Optional[OrthoImage]:
+    from rasterio.warp import reproject, Resampling
+    arr, tf = xyz_mosaic(GSI_PHOTO_URL, GSI_PHOTO_ZOOM, bbox_swne, _decode_rgb)
+    if arr is None:
+        return None
+    _, _, width, height, dst_transform = grid
+    dst = np.zeros((3, height, width), dtype=np.uint8)
+    reproject(arr, dst, src_transform=tf, src_crs="EPSG:3857", dst_transform=dst_transform, dst_crs=frame.crs,
+              resampling=Resampling.bilinear, src_nodata=None, dst_nodata=0)
+    if dst.max() == 0:
+        return None
+    return _to_image(dst, grid, resolution, "gsi_photo",
+                     f"GSI seamless photo tiles z{GSI_PHOTO_ZOOM} (EPSG:3857 -> local)")
+
+
+def mostly_blank(arr: np.ndarray, frac: float = 0.5) -> bool:
+    """True when more than ``frac`` of an RGB image (H, W, 3) is pure white or pure black: a service that
+    answers outside its area with an empty picture."""
+    if arr is None or arr.size == 0:
+        return True
+    a = np.asarray(arr)
+    blank = (a.min(axis=-1) >= 250) | (a.max(axis=-1) <= 3)
+    return float(blank.mean()) > frac
+
+
 # name -> provider(frame, bbox_swne, resolution, grid, **opts) -> OrthoImage | None
 PROVIDERS = {
     "icgc": _fetch_icgc,
@@ -481,6 +619,10 @@ PROVIDERS = {
     "naip": _fetch_naip,
     "nys_orthos": _fetch_nys,
     "pdok_luchtfoto": _fetch_pdok,
+    "ign_fr": _fetch_ign_fr,
+    "swissimage": _fetch_swissimage,
+    "flanders": _fetch_flanders,
+    "gsi_photo": _fetch_gsi_photo,
     "osm_tiles": _fetch_osm_tiles,
 }
 # providers whose own module caches the result (skip the imagery-level cache for them)
@@ -514,6 +656,10 @@ def fetch_ortho(frame: LocalFrame, bbox_swne: tuple[float, float, float, float],
         if fn is None:
             log.warning("imagery: unknown source %r (known: %s)", name, sorted(PROVIDERS))
             continue
+        from ..regions import covers
+        if not covers(name, bbox_swne):
+            log.info("imagery: %s does not cover %s; skipped", name, tuple(bbox_swne))
+            continue
         cpath = _cache_path(cache_dir, bbox_swne, resolution, layer if name == "icgc" else "",
                             provider=name)
         if use_cache and name not in _SELF_CACHING and cpath.exists():
@@ -533,6 +679,9 @@ def fetch_ortho(frame: LocalFrame, bbox_swne: tuple[float, float, float, float],
             log.warning("imagery: source %s failed: %s", name, exc)
             img = None
         if img is None:
+            continue
+        if name not in _SELF_CACHING and mostly_blank(img.array):
+            log.warning("imagery: %s answered with a mostly blank picture (outside its area?); skipped", name)
             continue
         img.source = name
         if not img.fetched:

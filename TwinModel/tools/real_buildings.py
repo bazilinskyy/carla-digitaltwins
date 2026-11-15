@@ -4,7 +4,11 @@
     python tools/real_buildings.py build/<name> --source nyc3d   # or 3dbag; default: by the twin's bbox
 
 The provider is chosen by where the twin is (twinmodel.ingest.buildings): 3DBAG LoD 2.2 in the Netherlands
-(with BAG uses), the NYC 3D Building Model LoD 2 in New York City (with PLUTO uses). Every building gets a
+(with BAG uses), the NYC 3D Building Model LoD 2 in New York City (with PLUTO uses), PLATEAU in the listed Japanese
+wards, the Catastro in Spain, BD TOPO in France; elsewhere (or when the national service fails) Overture Maps,
+then the twin's own OSM footprints, as prisms with roof shapes (--no-global keeps the bake export's OSM slabs
+there instead). The facade region (brick, warm render and sandstone, US, Japanese) comes from the twin's country
+(twinmodel.regions). Every building gets a
 facade style from its construction year, uses, height and size, roofs get the twin's aerial photo, and the
 manifest's building assets and footprints are swapped for the real ones (twinmodel.export.realbuildings).
 The OSM building meshes are kept in meshes/osm_buildings/. Fetches are cached in <build>/<provider>/.
@@ -40,19 +44,48 @@ def main(argv=None, default_source="auto"):
     ap.add_argument("--no-window-lights", action="store_true",
                     help="no night masks (bake_level.py then gives the facades no lit windows)")
     ap.add_argument("--roof-px", type=int, default=1024, help="aerial photo texture per tile")
+    ap.add_argument("--no-source-textures", action="store_true",
+                    help="ignore a city model's own photo textures (PLATEAU LoD 2): facade styles instead")
+    ap.add_argument("--no-global", action="store_true",
+                    help="no Overture/OSM prisms where no national model covers the twin (the OSM slabs stay)")
+    ap.add_argument("--region", default=None, help="facade region (nl, eu, south, us, jp; default: by country)")
     ap.add_argument("--procedural-min-height", type=float, default=facades.PROCEDURAL_MIN_HEIGHT_M,
                     help="buildings at least this high to the eaves (m) may take bake_level.py's "
                          "--buildings procedural facades: their walls below the eaves are written apart")
     args = ap.parse_args(argv)
     build = Path(args.build_dir)
     man = json.loads((build / "ue" / "manifest.json").read_text())
-    name = args.source if args.source != "auto" else providers.choose(man["bbox_wgs84"])
-    if name is None:
+    from twinmodel import regions
+    iso2 = twin_country(build)
+    plan = regions.plan_for(iso2, man["bbox_wgs84"])
+    region = args.region or plan.facade_region
+    if args.source != "auto":
+        names = [args.source]
+    else:
+        names = providers.candidates(man["bbox_wgs84"], order=list(plan.buildings) + list(providers.PROVIDERS))
+        if args.no_global:
+            names = [n for n in names if n not in providers.GLOBAL]
+    if not names:
         print("real buildings: no provider covers %s (known: %s); the OSM buildings stay" % (
             man["bbox_wgs84"], sorted(providers.PROVIDERS)))
         return 0
     looks = not args.plain
-    blds, source = providers.load(name, build, man, looks=looks, lod=args.lod, uses=not args.no_uses)
+    blds = source = None
+    for name in names:
+        try:
+            blds, source = providers.load(name, build, man, looks=looks, lod=args.lod, uses=not args.no_uses,
+                                          region=region, textures=not args.no_source_textures)
+        except Exception as exc:  # noqa: BLE001 - offline, a service down, duckdb missing: the next provider
+            print(f"real buildings: {name} failed ({type(exc).__name__}: {exc}); trying the next provider",
+                  flush=True)
+            continue
+        if blds:
+            break
+        print(f"real buildings: {name} gave no buildings; trying the next provider", flush=True)
+    if not blds:
+        print("real buildings: no provider gave buildings (%s); the OSM buildings stay" % ", ".join(names))
+        return 0
+    print(f"real buildings: {source.name} for {iso2 or 'an unknown country'} (facade region {region})")
     if args.roof_photo_max_m is not None:
         source.roof_photo_max_m = args.roof_photo_max_m
     if source.skirt and not args.no_skirt:
@@ -75,6 +108,15 @@ def main(argv=None, default_source="auto"):
                         roof_px=args.roof_px, procedural_min_height=args.procedural_min_height,
                         window_lights=not args.no_window_lights)
     return 0
+
+
+def twin_country(build: Path):
+    """ISO alpha-2 of the twin (its report.json profile record), or None."""
+    try:
+        rep = json.loads((build / "report.json").read_text())
+        return (rep.get("profile") or (rep.get("build") or {}).get("profile") or {}).get("iso2")
+    except Exception:  # noqa: BLE001
+        return None
 
 
 if __name__ == "__main__":

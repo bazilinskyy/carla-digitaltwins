@@ -1735,6 +1735,35 @@ def build_surfaces(model: TwinModel,
                                       road_ids=[sig.road_id], tags=c_tags))
         k += 1
 
+    # 4a. crossings along OSM crossing ways no node crossing covers (scramble diagonals; profile from_ways)
+    if P.crossing.from_ways and model.metadata.get("crossing_ways_wkt"):
+        from shapely import wkt as _wkt
+        have = unary_union([sf.geometry for sf in model.surfaces if sf.kind == "crossing"]) \
+            if any(sf.kind == "crossing" for sf in model.surfaces) else Polygon()
+        n_way = 0
+        for text in model.metadata["crossing_ways_wkt"]:
+            line = _wkt.loads(text)
+            cs = np.asarray(line.coords)[:, :2]
+            for a, b in zip(cs[:-1], cs[1:]):
+                seg = LineString([a, b])
+                if seg.length < 2.0:
+                    continue
+                band = seg.buffer(P.crossing.width / 2.0, cap_style="flat")
+                geom = _clean(band.intersection(drivable))
+                if geom.is_empty or geom.area < 4.0:
+                    continue
+                if not have.is_empty and geom.intersection(have).area > 0.3 * geom.area:
+                    continue
+                d = (b - a) / float(np.hypot(*(b - a)))
+                model.surfaces.append(Surface(id=f"crossing_{k}", kind="crossing", geometry=geom,
+                                              z_offset=P.crossing.z, source="osm_tags", road_ids=[],
+                                              tags={"walk_dir": [round(float(d[0]), 6), round(float(d[1]), 6)],
+                                                    "from_way": True}))
+                have = have.union(geom)
+                k += 1
+                n_way += 1
+        stats["crossings_from_ways"] = n_way
+
     # 4b. parking lots (OSM amenity=parking, handed over by the lane graph as WKT): at road
     #     level, never over the carriageway, a raised surface or a building
     raised_all = _clean(unary_union(raised_union_parts + islands)) if (raised_union_parts or islands) else Polygon()
@@ -1826,9 +1855,19 @@ def build_surfaces(model: TwinModel,
             continue
         for mk in road_markings(r, default_markings=default_markings):
             g = mk.geometry
-            if clip_out is not None:
-                g = g.difference(clip_out)
-            g = g.intersection(keep_in)
+            try:
+                if clip_out is not None:
+                    g = g.difference(clip_out)
+                g = g.intersection(keep_in)
+            except shapely.errors.GEOSException:   # a robustness failure on odd input: retry with valid input
+                try:
+                    g = shapely.make_valid(mk.geometry)
+                    if clip_out is not None:
+                        g = g.difference(shapely.make_valid(clip_out))
+                    g = g.intersection(shapely.make_valid(keep_in))
+                except shapely.errors.GEOSException:
+                    log.warning("marking of %s dropped: GEOS could not clip it", r.id)
+                    continue
             for line in _lines(g):
                 if line.length > 0.3:
                     model.markings.append(Marking(kind=mk.kind, color=mk.color, width=mk.width,
@@ -1875,3 +1914,18 @@ def build_surfaces(model: TwinModel,
              stats["drivable_area"], stats["sidewalk_area"], stats["ground_area"], stats["island_count"],
              stats["curb_length"], stats["marking_count"], n_plaza, len(junction_polys))
     return model
+
+
+def crossing_ways(osm, frame) -> list:
+    """WKT lines (model frame) of OSM's crossing ways (footway/cycleway/path=crossing), for
+    ``CrossingRules.from_ways`` (build_surfaces step 4a)."""
+    out = []
+    for w in osm.ways:
+        t = w.tags or {}
+        if "crossing" not in (t.get("footway"), t.get("cycleway"), t.get("path")) and \
+                not (t.get("highway") in ("footway", "path", "cycleway") and t.get("crossing")):
+            continue
+        pts = [frame.to_local(lon, lat) for lon, lat in osm.way_coords(w)]
+        if len(pts) >= 2:
+            out.append(LineString([(float(x), float(y)) for x, y in pts]).wkt)
+    return out

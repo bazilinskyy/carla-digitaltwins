@@ -371,8 +371,12 @@ def crossing_walk_dir(model: TwinModel, s, poly: Polygon) -> Optional[np.ndarray
     """Pedestrian walking direction of a crossing surface: the crossed road's left normal at
     the crossing polygon, so the zebra bars run parallel to the road no matter how the clipped
     polygon is shaped (``surfaces.crossing_polygon`` builds the rect from the road, but the
-    intersection with the drivable surface can leave a near-square or skewed piece). None when
-    the surface references no known road (polygon-PCA fallback applies)."""
+    intersection with the drivable surface can leave a near-square or skewed piece). A crossing drawn
+    along an OSM crossing way carries its own walking direction (tag ``walk_dir``). None when the
+    surface references no known road (polygon-PCA fallback applies)."""
+    wd = (getattr(s, "tags", None) or {}).get("walk_dir")
+    if wd:
+        return np.asarray(wd, dtype=np.float64)
     for rid in getattr(s, "road_ids", None) or ():
         try:
             road = model.road(rid)
