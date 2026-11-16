@@ -166,7 +166,7 @@ def test_passage_through_building_is_clear_and_closed(tmp_path):
     assert_closed(build, 20 * 30 * 20.3)
     lanes = lanes_along_x()
     before = C.check(build, lanes)
-    assert before["road"]["blocked"] >= 15
+    assert before["road"]["crossings"] >= 2 and before["road"]["blocked"] + before["road"]["inside"] >= 15
     st = C.apply(build, lanes=lanes, log=lambda *a: None)
     assert st["passage"] == 1 and st["trim"] == 0 and st["soffit_m2"] > 100
     tris, man = building_tris(build)
@@ -231,7 +231,7 @@ def test_sidewalk_lane_gets_a_low_passage(tmp_path):
     build = make_export(tmp_path, [("W", -10, 5.0, 10, 15, -0.3, 15.0)])
     walk = lanes_along_x(y=5.5, z=0.15, kind="Sidewalk", width=2.0, lane=2)
     lanes = merged([lanes_along_x(), walk])
-    assert C.check(build, lanes)["walk"]["blocked"] > 10
+    assert C.check(build, lanes)["walk"]["blocked"] >= 2
     st = C.apply(build, lanes=lanes, log=lambda *a: None)
     assert st["passage"] == 1
     tris, _ = building_tris(build)
@@ -298,7 +298,8 @@ def test_check_counts_walls_and_overhangs(tmp_path):
     build = make_export(tmp_path, [("A", -2, -6, 2, 6, -0.3, 10.0)])
     lanes = lanes_along_x()
     r = C.check(build, lanes)
-    assert 2 <= r["road"]["crossings"] <= 4 and 5 <= r["road"]["blocked"] <= 8
+    assert 2 <= r["road"]["crossings"] <= 4 and r["road"]["blocked"] == r["road"]["crossings"]
+    assert 2 <= r["road"]["inside"] <= 5
     # an overhang: a horizontal plate at 3 m over the road only
     v, f = _slab(20, -2, 30, 2, z=3.0)
     tris = np.concatenate([C.building_triangles(build / "ue", json.loads((build / "ue/manifest.json").read_text())),

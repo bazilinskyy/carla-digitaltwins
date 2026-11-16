@@ -11,7 +11,8 @@ from the uncut meshes each time (ue/meshes/uncut/), so it can run again after an
 
 The check reads the twin's OpenDRIVE with CARLA's own parser (the carla wheel in this interpreter) and counts the
 1 m driving-lane and sidewalk-lane samples that are blocked by a building (a wall across the lane or a surface
-less than 4.0 m / 2.2 m above it, or inside a building). The result goes to <build>/clearance.json (every blocked
+less than 4.0 m / 2.2 m above it; samples inside a building solid are counted apart, for information). The
+result goes to <build>/clearance.json (every blocked
 sample with lat/lon) and to twin.json ``clearance``. Exit code 3 when more samples are blocked than --max-road /
 --max-walk allow (default 0): the twin is not ready to bake.
 """
@@ -103,7 +104,8 @@ def main(argv=None) -> int:
 def _line(r: dict) -> str:
     return (f"{r['road']['blocked']} of {r['road']['samples']} driving-lane samples blocked on {r['road']['roads']} "
             f"roads ({r['road']['crossings']} wall crossings), {r['walk']['blocked']} of {r['walk']['samples']} "
-            f"sidewalk samples on {r['walk']['roads']} roads")
+            f"sidewalk samples on {r['walk']['roads']} roads; inside a building (information): {r['road']['inside']} "
+            f"driving, {r['walk']['inside']} sidewalk")
 
 
 if __name__ == "__main__":

@@ -60,11 +60,12 @@ WALK_HALF_M = 0.6          # sidewalk corridor: this far either side of the side
 GRAZE_M = 0.3              # a footprint inside a corridor by less than this (width) is left alone
 SLIVER_M = 1.8             # a footprint inside the carriageway by less than this, not split by it: trimmed
 LOW_EAVES_M = 0.5          # a building with eaves below clearance + this is removed in the corridor
-FOOT_BUFFER_M = 0.3        # walls this close to a footprint belong to it
+FOOT_BUFFER_M = 0.6        # walls this close to a footprint belong to it (city-model walls stray from footprints)
 STEP_M = 0.1               # the clearance heights are rounded up to this
 THIN_TOP_M = 0.5           # a building surface less than this above the clearance is cut away too
 SOFFIT_GRID_M = 1.0        # the soffit is kept where the building's roof is above it, tested on this grid
-WALL_SEG_M = 3.0           # cut walls under a roof are split this fine so their top follows the roof
+WALL_PIECE_M = 0.5         # cut walls are built in pieces this long (their top follows the roof, their neighbour
+                           # cut can change along an edge)
 ROAD_KINDS = ("drivable", "parking", "crossing")
 WALK_KINDS = ("sidewalk",)
 BUILDING_KINDS = ("building", "building_3dbag", "roof")
@@ -177,6 +178,11 @@ def lane_quads(lanes: Lanes, half: Optional[float] = None) -> list:
             poly = max(_polys(poly), key=lambda g: g.area, default=None)
         if poly is not None and poly.area > 1e-3:
             out.append((poly, max(p[2], q[2]), min(p[2], q[2])))
+    # the ends of each lane piece: a disc, so the next section (sampled up to a step later) joins on
+    deg = np.bincount(np.concatenate([ia, ib]), minlength=len(lanes))
+    for i in np.nonzero(deg == 1)[0]:
+        if w[i] > 0.05:
+            out.append((Point(lanes.xyz[i, :2]).buffer(w[i], quad_segs=4), lanes.xyz[i, 2], lanes.xyz[i, 2]))
     return out
 
 
@@ -550,6 +556,7 @@ def plan(blds: list, cor: Corridor, graze_m: float = GRAZE_M, sliver_m: float = 
         fb = b.poly.buffer(FOOT_BUFFER_M, join_style="mitre", mitre_limit=2.0)
         road_all = [z for z in (cor.local(lay, "road", fb)[0] for lay in cor.layers()) if z is not None]
         road_all = shapely.union_all(road_all) if road_all else None
+        zones = []
         for layer in cor.layers():
             for group in ("road", "walk"):
                 zone, zs = cor.local(layer, group, fb)
@@ -564,8 +571,14 @@ def plan(blds: list, cor: Corridor, graze_m: float = GRAZE_M, sliver_m: float = 
                 if zone.is_empty:
                     continue
                 inside = zone.intersection(b.poly)
-                if inside.is_empty or inside.buffer(-graze_m / 2.0).is_empty:
-                    continue
+                if not inside.is_empty:
+                    zones.append((layer, group, zone, inside))
+        # a building only grazed by every corridor is left alone; one that is cut anywhere is cut everywhere the
+        # corridors touch it (a sidewalk lane running into a road passage's side wall)
+        if not any(not ins.buffer(-graze_m / 2.0).is_empty for _, _, _, ins in zones):
+            continue
+        for layer, group, zone, inside in zones:
+            if True:   # noqa: SIM108 - keeps the cell code at its indentation
                 cells = []
                 for c in _grid_cells(zone):
                     zr = cor.zvals(layer, group, c.buffer(ROAD_BUFFER_M + 0.1))
@@ -704,14 +717,22 @@ def _foot2d(tri: np.ndarray):
     return LineString([xy[i], xy[j]])
 
 
-def _inside(region_poly, piece: np.ndarray, normal: np.ndarray) -> bool:
-    """Is a clipped piece inside a region? Its centroid; a vertical piece only when both sides of it are
-    (a wall exactly on the corridor edge, e.g. a facade on the kerb line, stays)."""
+def _inside(region_poly, piece: np.ndarray, normal: np.ndarray, others=()) -> bool:
+    """Is a clipped piece inside a region? Its centroid; a vertical piece when one side of it is in the region
+    and the other side in it or in one of ``others`` (a party wall between two cut cells goes; a wall exactly
+    on the corridor edge, e.g. a facade on the kerb line, stays)."""
     c = piece[:, :2].mean(axis=0)
     hz = math.hypot(normal[0], normal[1])
     if abs(normal[2]) < 0.05 and hz > 0.5:
         n2 = np.array(normal[:2]) / hz * 0.03
-        return bool(shapely.contains_xy(region_poly, *(c + n2)) and shapely.contains_xy(region_poly, *(c - n2)))
+        a, b = c + n2, c - n2
+        ina, inb = bool(shapely.contains_xy(region_poly, *a)), bool(shapely.contains_xy(region_poly, *b))
+        if ina and inb:
+            return True
+        if not (ina or inb):
+            return False
+        other = b if ina else a
+        return any(bool(shapely.contains_xy(o, *other)) for o in others)
     return bool(shapely.contains_xy(region_poly, c[0], c[1]))
 
 
@@ -789,7 +810,7 @@ def clip_mesh(pos, nrm, uv, faces, regions: list, tree: Optional[STRtree],
             parts = [p]
             for r in hit:
                 reg = regions[r]
-                if not _inside(reg.poly, p, fn):
+                if not _inside(reg.poly, p, fn, [regions[o].poly for o in hit if o != r]):
                     continue
                 a_before = sum(_area3(q) for q in parts)
                 nxt = []
@@ -957,33 +978,38 @@ def close_cut(regions: list, blds: list, top: TopZ, plain: bool, tile_m: float =
                     if fb.distance(Point(m)) < 0.02:
                         continue        # on the facade: the opening of the passage
                     n_in = np.array([-d[1], d[0]]) / L      # interior (the cut) on the left
-                    q = m - n_in * 0.05
-                    lo_hi = [(r.floor, r.clear)]
-                    # every cut beside this one, on any layer: its slab needs no wall
-                    nb = [regions[i] for i in all_tree.query(Point(q), predicate="intersects")]
-                    nb = [x for x in nb if x is not r and x.poly.contains(Point(q))]
-                    for x in nb:
-                        nxt = []
-                        for lo, hi in lo_hi:
-                            if x.clear <= lo or x.floor >= hi:
-                                nxt.append((lo, hi))
-                                continue
-                            if x.floor > lo:
-                                nxt.append((lo, x.floor))
-                            if x.clear < hi:
-                                nxt.append((x.clear, hi))
-                        lo_hi = nxt
-                    if not lo_hi:
-                        continue
-                    k = max(1, int(math.ceil(L / WALL_SEG_M)))
+                    normal = np.array([n_in[0], n_in[1], 0.0])
+                    # pieces of at most WALL_PIECE_M: the neighbour can change along a long edge
+                    k = max(1, int(math.ceil(L / WALL_PIECE_M)))
                     ts = np.linspace(0.0, 1.0, k + 1)
                     pts = a[None, :] + ts[:, None] * d[None, :]
                     tz = top(pts)
                     tz = np.where(np.isfinite(tz), tz, b.roof)
-                    normal = np.array([n_in[0], n_in[1], 0.0])
-                    for lo, hi in lo_hi:
-                        lo = max(lo, b.base)
-                        for i in range(k):
+                    for i in range(k):
+                        mi = (pts[i] + pts[i + 1]) / 2.0
+                        lo_hi = [(r.floor, r.clear)]
+                        # every cut beside this one, on any layer: its slab needs no wall (looked for a little
+                        # way out, over the slivers two independent cell outlines leave between them)
+                        nb = []
+                        for off in (0.05, 0.15, 0.3):
+                            q = Point(mi - n_in * off)
+                            nb = [regions[j] for j in all_tree.query(q, predicate="intersects")]
+                            nb = [x for x in nb if x is not r and x.poly.contains(q)]
+                            if nb:
+                                break
+                        for x in nb:
+                            nxt = []
+                            for lo, hi in lo_hi:
+                                if x.clear <= lo or x.floor >= hi:
+                                    nxt.append((lo, hi))
+                                    continue
+                                if x.floor > lo:
+                                    nxt.append((lo, x.floor))
+                                if x.clear < hi:
+                                    nxt.append((x.clear, hi))
+                            lo_hi = nxt
+                        for lo, hi in lo_hi:
+                            lo = max(lo, b.base)
                             z1a, z1b = min(hi, tz[i]), min(hi, tz[i + 1])
                             if not (math.isfinite(z1a) and math.isfinite(z1b)):
                                 continue
@@ -992,7 +1018,7 @@ def close_cut(regions: list, blds: list, top: TopZ, plain: bool, tile_m: float =
                             z1a, z1b = max(z1a, lo), max(z1b, lo)
                             v = np.array([[*pts[i], lo], [*pts[i + 1], lo], [*pts[i + 1], z1b], [*pts[i], z1a]])
                             sink.add(v, normal, _wall_uv(v, normal, st), [[0, 1, 2], [0, 2, 3]])
-                            stats["wall_m2"] += float(np.linalg.norm(d)) / k * ((z1a + z1b) / 2 - lo)
+                            stats["wall_m2"] += L / k * ((z1a + z1b) / 2 - lo)
             if sink.faces:
                 # what another cut (an overlapping layer, a neighbour's cell) removes is not put back
                 pos, nrm, uv, faces = sink.arrays()
@@ -1184,9 +1210,10 @@ def check(build: Path, lanes: Lanes, man: Optional[dict] = None, bands: Optional
     """Lane samples blocked by buildings. ``crossings`` (the stand-alone checker's measure): for each pair of
     consecutive 1 m samples of a driving (sidewalk) lane, a building triangle that crosses the segment between
     ``bands`` m above it; walls (vertical triangles) count over their height range, other triangles at their
-    height over the segment's ends and middle. ``blocked`` adds the samples inside a building solid (a vertical
-    ray from the band's bottom crosses an odd number of building surfaces) and those under a building surface
-    inside the band. Returns {group: {samples, blocked, crossings, roads, worst, hits: [...]}} (model x, y, z
+    height over the segment's ends and middle. ``blocked`` adds the samples under a building surface inside the
+    band (an overhang a vehicle would hit). ``inside`` (information only, not in ``blocked``): samples a vertical
+    ray from the band's bottom shows inside a building solid (an odd number of building surfaces above); open
+    source meshes (canopies, overlapping parts, no ground faces) make it approximate. Returns {group: {samples, blocked, crossings, roads, worst, hits: [...]}} (model x, y, z
     and lat/lon of each blocked sample). On a street with an OSM ``maxheight`` (``streets``, see
     osm_street_zones) the road band ends just under that street's clearance."""
     build = Path(build)
@@ -1261,24 +1288,27 @@ def check(build: Path, lanes: Lanes, man: Optional[dict] = None, bands: Optional
                     # a point on an edge shared by two triangles meets the same surface twice: once per height
                     uq = np.unique(np.column_stack([qi[above], np.round(zt[above], 3)]), axis=0)
                     cnt = np.bincount(uq[:, 0].astype(int), minlength=len(L))
-                    inside = ((cnt % 2) == 1) & ~blocked
-                    why[inside] = "inside"
-                    blocked |= inside
                     band = above & (zt < L.xyz[qi, 2] + hi_s[qi])
                     why[qi[band]] = np.where(why[qi[band]] == "", "surface", why[qi[band]])
                     blocked[qi[band]] = True
+                    enclosed = ((cnt % 2) == 1) & ~blocked
+                    why[enclosed] = "inside"
         hits = []
-        for i in np.nonzero(blocked)[0]:
+        for i in np.nonzero(blocked | (why == "inside"))[0]:
             x, y, z = L.xyz[i]
             lon, lat = to_ll(x, y)
             hits.append({"road": int(L.road[i]), "why": str(why[i]), "x": round(float(x), 2), "y": round(float(y), 2),
                          "z": round(float(z), 2), "lat": round(lat, 6), "lon": round(lon, 6)})
         roads = defaultdict(int)
         for h in hits:
-            roads[h["road"]] += 1
-        res[group] = {"samples": int(len(L)), "blocked": len(hits), "crossings": crossings, "roads": len(roads),
-                      "worst": [{"road": r, "blocked": k, "lat": next(h["lat"] for h in hits if h["road"] == r),
-                                 "lon": next(h["lon"] for h in hits if h["road"] == r)}
+            if h["why"] != "inside":
+                roads[h["road"]] += 1
+        n_in = sum(1 for h in hits if h["why"] == "inside")
+        res[group] = {"samples": int(len(L)), "blocked": len(hits) - n_in, "crossings": crossings, "inside": n_in,
+                      "roads": len(roads),
+                      "worst": [{"road": r, "blocked": k,
+                                 "lat": next(h["lat"] for h in hits if h["road"] == r and h["why"] != "inside"),
+                                 "lon": next(h["lon"] for h in hits if h["road"] == r and h["why"] != "inside")}
                                 for r, k in sorted(roads.items(), key=lambda kv: -kv[1])[:12]],
                       "hits": hits}
     return res
