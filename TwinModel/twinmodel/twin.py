@@ -409,7 +409,8 @@ def twin(args) -> int:
 
 def link_cache(cache: Path, out: Path, bbox) -> int:
     """Link the build's cached terrain grid, aerial photo and Overpass extract of this bbox into <out>/data/, where the
-    buildings, ground-photo and clearance tools look for them (realbuildings.find_dem / find_ortho search the build folder and its parents)."""
+    buildings, ground-photo and clearance tools look for them (realbuildings.find_dem / find_ortho search the build
+    folder and its parents)."""
     s, w, n, e = bbox
     stem = "%.5f_%.5f_%.5f_%.5f_" % (s, w, n, e)
     dst = out / "data"
