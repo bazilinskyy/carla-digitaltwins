@@ -554,8 +554,7 @@ def plan(blds: list, cor: Corridor, graze_m: float = GRAZE_M, sliver_m: float = 
     regions, decisions = [], []
     for bi, b in enumerate(blds):
         fb = b.poly.buffer(FOOT_BUFFER_M, join_style="mitre", mitre_limit=2.0)
-        road_all = [z for z in (cor.local(lay, "road", fb)[0] for lay in cor.layers()) if z is not None]
-        road_all = shapely.union_all(road_all) if road_all else None
+        roads_near = [(z, zs) for z, zs in (cor.local(lay, "road", fb) for lay in cor.layers()) if z is not None]
         zones = []
         for layer in cor.layers():
             for group in ("road", "walk"):
@@ -565,8 +564,13 @@ def plan(blds: list, cor: Corridor, graze_m: float = GRAZE_M, sliver_m: float = 
                 if group == "walk" and (layer, "walk") not in cor.quads:
                     # sidewalk meshes without lanes: keep only their middle (a facade on the edge is fine)
                     zone = zone.buffer(-1.0)
-                if group == "walk" and road_all is not None:
-                    zone = zone.difference(road_all)   # sidewalks never cut inside a road corridor
+                if group == "walk" and roads_near:
+                    # sidewalks never cut inside a road corridor at their height (a road deck above an underpass
+                    # does not count)
+                    lo_z, hi_z = float(zs.min()) - 1.5, float(zs.max()) + 1.5
+                    near = [z for z, rz in roads_near if rz.min() <= hi_z and rz.max() >= lo_z]
+                    if near:
+                        zone = zone.difference(shapely.union_all(near))
                 zone = zone.intersection(fb)
                 if zone.is_empty:
                     continue
@@ -752,7 +756,8 @@ def clip_mesh(pos, nrm, uv, faces, regions: list, tree: Optional[STRtree],
     if tree is None or not len(faces):
         return pos, nrm, uv, faces, 0.0
     tri = pos[faces]
-    tb = shapely.box(tri[:, :, 0].min(1), tri[:, :, 1].min(1), tri[:, :, 0].max(1), tri[:, :, 1].max(1))
+    tb = shapely.box(tri[:, :, 0].min(1) - 0.05, tri[:, :, 1].min(1) - 0.05, tri[:, :, 0].max(1) + 0.05,
+                     tri[:, :, 1].max(1) + 0.05)     # a little wider: the cut beside a wall counts (_inside)
     ti, ri = tree.query(tb, predicate="intersects")
     if not len(ti):
         return pos, nrm, uv, faces, 0.0
@@ -810,7 +815,7 @@ def clip_mesh(pos, nrm, uv, faces, regions: list, tree: Optional[STRtree],
             parts = [p]
             for r in hit:
                 reg = regions[r]
-                if not _inside(reg.poly, p, fn, [regions[o].poly for o in hit if o != r]):
+                if not _inside(reg.poly, p, fn, [regions[o].poly for o in rs if o != r]):
                     continue
                 a_before = sum(_area3(q) for q in parts)
                 nxt = []
@@ -1032,6 +1037,49 @@ def close_cut(regions: list, blds: list, top: TopZ, plain: bool, tile_m: float =
     return out, keys, {k: round(v, 1) for k, v in stats.items()}
 
 
+# --------------------------------------------------------------------------- footprints for simulation tools
+
+OPEN_M = 2.0     # a cut at least this tall leaves room for a walker or a car: not part of the solid footprint
+
+
+def _no_holes(poly) -> list:
+    """A polygon split into pieces without holes (cut through each hole's centre)."""
+    todo, out = [poly], []
+    while todo:
+        p = todo.pop()
+        if not p.interiors:
+            out.append(p)
+            continue
+        hx = Polygon(p.interiors[0]).centroid.x
+        minx, miny, maxx, maxy = p.bounds
+        for half in (box(minx - 1, miny - 1, hx, maxy + 1), box(hx, miny - 1, maxx + 1, maxy + 1)):
+            todo.extend(q for q in _polys(p.intersection(half)) if q.area > 0.05)
+    return out
+
+
+def solid_footprints(blds: list, regions: list) -> list:
+    """The buildings' footprints minus the passages cut through them (where at least OPEN_M of height was
+    cleared), as clipcheck/buildings.json records in CARLA x, y: [{id, p: [[x, y], ...], z0, z1, s}], holes
+    split away (the readers take one ring)."""
+    tall = [r for r in regions if r.clear - r.floor >= OPEN_M]
+    tree = STRtree([r.poly for r in tall]) if tall else None
+    out = []
+    for b in blds:
+        g = b.poly
+        if tree is not None:
+            hit = tree.query(g, predicate="intersects")
+            if len(hit):
+                g = g.difference(shapely.union_all([tall[i].poly for i in hit]))
+        for p in _polys(g):
+            for q in _no_holes(p):
+                if q.area < 0.5:
+                    continue
+                ring = np.asarray(q.exterior.coords)
+                out.append({"id": b.id, "p": [[round(float(x), 2), round(float(-y), 2)] for x, y in ring],
+                            "z0": round(b.base, 2), "z1": round(b.roof, 2), "s": "twin"})
+    return out
+
+
 # --------------------------------------------------------------------------- the step
 
 def restore(out: Path, man: dict) -> bool:
@@ -1186,6 +1234,9 @@ def apply(build: Path, man: Optional[dict] = None, *, lanes: Optional[Lanes] = N
     if write:
         (out / "manifest.json").write_text(json.dumps(man, indent=1))
         (build / "clearance_cuts.json").write_text(json.dumps(decisions, indent=0))
+        # the solid footprints, for the simulation's own checks (coupled-carla tools/trial_buildings.py,
+        # clipcheck): copied next to the twin's OpenDRIVE as <Name>.buildings.json
+        (build / f"{name}.buildings.json").write_text(json.dumps(solid_footprints(blds, regions)))
     log(f"clearance: {n_changed} meshes cut ({removed_m2:.0f} m2 of building surface removed), {len(added)} "
         f"closing meshes (soffits {cstats['soffit_m2']:.0f} m2, walls {cstats['wall_m2']:.0f} m2) in "
         f"{stats['seconds']:.0f} s")

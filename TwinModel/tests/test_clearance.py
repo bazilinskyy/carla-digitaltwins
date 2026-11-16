@@ -307,3 +307,15 @@ def test_check_counts_walls_and_overhangs(tmp_path):
     r2 = C.check(build, lanes, tris=tris)
     assert r2["road"]["blocked"] >= r["road"]["blocked"] + 9
     assert all(math.isfinite(h["lat"]) for h in r2["road"]["hits"])
+
+
+def test_solid_footprints_leave_the_passage_open(tmp_path):
+    """<Name>.buildings.json: the building's footprint minus the passage, in CARLA x, y (y flipped)."""
+    build = make_export(tmp_path, [("B1", -10, -15, 10, 15, -0.3, 20.0)])
+    C.apply(build, lanes=lanes_along_x(), log=lambda *a: None)
+    recs = json.loads((build / "T.buildings.json").read_text())
+    assert len(recs) == 2 and all(r["id"] == "B1" for r in recs)
+    polys = [Polygon(r["p"]) for r in recs]
+    assert abs(sum(p.area for p in polys) - (600 - 20 * (7.0 + 2 * C.ROAD_BUFFER_M))) < 1.0
+    assert all(not p.contains(shapely.Point(0, 0)) for p in polys)
+    assert any(p.contains(shapely.Point(0, -10)) for p in polys)   # model y +10 -> CARLA y -10
