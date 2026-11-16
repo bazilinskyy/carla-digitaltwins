@@ -44,6 +44,8 @@ def main(argv=None) -> int:
                     "tags (default: <build>/data/overpass_*.json)")
     ap.add_argument("--check-only", action="store_true", help="measure, do not cut")
     ap.add_argument("--before", action="store_true", help="measure the uncut meshes before cutting")
+    ap.add_argument("--footprints-only", action="store_true",
+                    help="only rewrite <Name>.buildings.json of an export cut before (no meshes written, no check)")
     ap.add_argument("--road-m", type=float, default=clearance.ROAD_CLEARANCE_M)
     ap.add_argument("--walk-m", type=float, default=clearance.WALK_CLEARANCE_M)
     ap.add_argument("--max-road", type=int, default=0, help="blocked driving-lane samples allowed (default 0)")
@@ -59,6 +61,10 @@ def main(argv=None) -> int:
               "checked", flush=True)
     else:
         print(f"clearance: {len(lanes)} lane samples from {xodr.name}", flush=True)
+    if args.footprints_only:
+        n = clearance.write_footprints(build, man, lanes=lanes, streets=clearance.osm_street_zones(build, args.osm))
+        print(f"clearance: {n} solid footprints -> {build / (man['name'] + '.buildings.json')}")
+        return 0
     rec = {"xodr": str(xodr) if xodr else None}
     if args.before and lanes is not None:
         uncut = json.loads(json.dumps(man))

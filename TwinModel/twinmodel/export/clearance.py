@@ -71,7 +71,7 @@ WALK_KINDS = ("sidewalk",)
 BUILDING_KINDS = ("building", "building_3dbag", "roof")
 # CARLA lane types: the road corridor and what the check counts as a road sample
 ROAD_LANES = ("Driving", "Parking", "Bidirectional", "Restricted")
-WALK_LANES = ("Sidewalk", "Biking")
+WALK_LANES = ("Sidewalk", "Biking")   # cut to WALK_CLEARANCE_M (sidewalks in a band, bike lanes whole)
 CHECK_BANDS = {"road": (0.5, 4.0), "walk": (0.3, 2.2)}   # m above the lane: a building surface in it blocks
 CHECK_LANES = {"road": ("Driving",), "walk": ("Sidewalk",)}
 EPS = 1e-6
@@ -488,13 +488,15 @@ def build_corridor(out: Path, man: dict, lanes: Optional[Lanes] = None, streets:
         else:
             road_layers.setdefault(("walk", key[0]), sz)
     have_walk_lanes = False
+    items_of = defaultdict(list)
     if lanes is not None and len(lanes):
-        for group, kinds, half in (("road", ROAD_LANES, None), ("walk", WALK_LANES, WALK_HALF_M)):
+        # sidewalks: a band either side of the centre line (a facade on a wide pavement stays); bike lanes: whole
+        for group, kinds, half in (("road", ROAD_LANES, None), ("walk", ("Sidewalk",), WALK_HALF_M),
+                                   ("walk", ("Biking",), None)):
             q = lane_quads(lanes.select(kinds), half=half)
             if not q:
                 continue
             have_walk_lanes |= group == "walk"
-            by_layer = defaultdict(list)
             cen = shapely.points([p.centroid.coords[0] for p, _, _ in q])
             zq = np.array([zmax for _, zmax, _ in q])
             layer_of = np.zeros(len(q), dtype=int)
@@ -513,9 +515,9 @@ def build_corridor(out: Path, man: dict, lanes: Optional[Lanes] = None, streets:
                     if d < 1.5 and d < best[i]:
                         best[i], layer_of[i] = d, lay
             for i, item in enumerate(q):
-                by_layer[int(layer_of[i])].append(item)
-            for lay, items in by_layer.items():
-                cor.quads[(lay, group)] = (STRtree([p for p, _, _ in items]), items)
+                items_of[(int(layer_of[i]), group)].append(item)
+    for key, items in items_of.items():
+        cor.quads[key] = (STRtree([p for p, _, _ in items]), items)
     if not have_walk_lanes:   # no xodr lanes: the middle of the sidewalk meshes
         for key, ts in tris.items():
             if key[1] != "walk":
@@ -1064,14 +1066,50 @@ def solid_footprints(blds: list, regions: list) -> list:
             hit = tree.query(g, predicate="intersects")
             if len(hit):
                 g = g.difference(shapely.union_all([tall[i].poly for i in hit]))
-        for p in _polys(g):
+        for p in _polys(shapely.make_valid(g.buffer(0))):
             for q in _no_holes(p):
-                if q.area < 0.5:
-                    continue
-                ring = np.asarray(q.exterior.coords)
-                out.append({"id": b.id, "p": [[round(float(x), 2), round(float(-y), 2)] for x, y in ring],
-                            "z0": round(b.base, 2), "z1": round(b.roof, 2), "s": "twin"})
+                # one valid ring per record: the readers use an even-odd test on the exterior alone
+                parts = [x for x in _polys(shapely.make_valid(Polygon(q.exterior).simplify(0.02))) if x.area >= 0.5]
+                parts = [y for x in parts for y in _no_holes(x)]
+                for r in parts:
+                    if not r.is_valid or r.area < 0.5:
+                        continue
+                    ring = np.asarray(r.exterior.coords)
+                    out.append({"id": b.id, "p": [[round(float(x), 2), round(float(-y), 2)] for x, y in ring],
+                                "z0": round(b.base, 2), "z1": round(b.roof, 2), "s": "twin"})
     return out
+
+
+def write_footprints(build: Path, man: Optional[dict] = None, *, lanes: Optional[Lanes] = None, streets=None,
+                     graze_m: float = GRAZE_M, sliver_m: float = SLIVER_M) -> int:
+    """Rewrite <build>/<Name>.buildings.json of an export cut before (its plan redone on the uncut meshes kept in
+    meshes/uncut/, nothing else written). Returns the number of records."""
+    build = Path(build)
+    out = build / "ue"
+    man = man if man is not None else json.loads((out / "manifest.json").read_text())
+    rec = man.get("clearance") or {}
+    p0 = rec.get("params") or {}
+    added = set(rec.get("added_assets", ()))
+    uncut = {a["asset"]: a for a in rec.get("uncut_assets", ())}
+    tops = []
+    for a in [x for x in man["assets"] if x["asset"] not in added] + \
+             [a for n, a in uncut.items() if n not in {x["asset"] for x in man["assets"]}]:
+        if a["kind"] not in BUILDING_KINDS:
+            continue
+        aa = dict(a)
+        if a["asset"] in uncut and (out / "meshes" / "uncut" / Path(a["file"]).name).exists():
+            aa["file"] = "meshes/uncut/" + Path(a["file"]).name
+        m = load_asset(out, aa)
+        if m is not None and len(m["faces"]):
+            tops.append(m["pos"][m["faces"]])
+    top = TopZ(np.concatenate(tops) if tops else np.zeros((0, 3, 3)))
+    blds = manifest_buildings(man)
+    cor = build_corridor(out, man, lanes, streets, p0.get("road_m", ROAD_CLEARANCE_M),
+                         p0.get("walk_m", WALK_CLEARANCE_M))
+    regions, _ = plan(blds, cor, graze_m, sliver_m, top)
+    recs = solid_footprints(blds, regions)
+    (build / f"{man['name']}.buildings.json").write_text(json.dumps(recs))
+    return len(recs)
 
 
 # --------------------------------------------------------------------------- the step

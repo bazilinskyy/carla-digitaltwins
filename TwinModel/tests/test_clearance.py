@@ -319,3 +319,14 @@ def test_solid_footprints_leave_the_passage_open(tmp_path):
     assert abs(sum(p.area for p in polys) - (600 - 20 * (7.0 + 2 * C.ROAD_BUFFER_M))) < 1.0
     assert all(not p.contains(shapely.Point(0, 0)) for p in polys)
     assert any(p.contains(shapely.Point(0, -10)) for p in polys)   # model y +10 -> CARLA y -10
+
+
+def test_footprints_rewritten_without_touching_meshes(tmp_path):
+    build = make_export(tmp_path, [("B1", -10, -15, 10, 15, -0.3, 20.0)])
+    C.apply(build, lanes=lanes_along_x(), log=lambda *a: None)
+    first = json.loads((build / "T.buildings.json").read_text())
+    stamp = {p.name: p.stat().st_mtime_ns for p in (build / "ue/meshes").glob("*.glb")}
+    (build / "T.buildings.json").unlink()
+    assert C.write_footprints(build, lanes=lanes_along_x()) == len(first)
+    assert json.loads((build / "T.buildings.json").read_text()) == first
+    assert stamp == {p.name: p.stat().st_mtime_ns for p in (build / "ue/meshes").glob("*.glb")}
