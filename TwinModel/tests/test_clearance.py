@@ -330,3 +330,16 @@ def test_footprints_rewritten_without_touching_meshes(tmp_path):
     assert C.write_footprints(build, lanes=lanes_along_x()) == len(first)
     assert json.loads((build / "T.buildings.json").read_text()) == first
     assert stamp == {p.name: p.stat().st_mtime_ns for p in (build / "ue/meshes").glob("*.glb")}
+
+
+def test_bike_lane_is_cut_over_its_whole_width(tmp_path):
+    """A bike lane 3.0 m wide whose edge runs 0.8 m into a facade: cut (a sidewalk band of +-0.6 m would not be)."""
+    build = make_export(tmp_path, [("K", -10, 6.2, 10, 15, -0.3, 15.0)])
+    bike = lanes_along_x(y=5.5, z=0.0, kind="Biking", width=3.0, lane=3)
+    walk = lanes_along_x(y=5.5, z=0.0, kind="Sidewalk", width=3.0, lane=3)
+    st = C.apply(build, lanes=merged([lanes_along_x(), walk]), log=lambda *a: None)
+    assert st["passage"] == 0 and st["trim"] == 0
+    st = C.apply(build, lanes=merged([lanes_along_x(), bike]), log=lambda *a: None)
+    assert st["passage"] == 1
+    tris, _ = building_tris(build)
+    assert blocked_in(tris, box(-60, 6.25, 60, 6.95), 0.2, 2.4) == 0
