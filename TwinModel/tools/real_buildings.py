@@ -48,6 +48,9 @@ def main(argv=None, default_source="auto"):
                     help="ignore a city model's own photo textures (PLATEAU LoD 2): facade styles instead")
     ap.add_argument("--no-global", action="store_true",
                     help="no Overture/OSM prisms where no national model covers the twin (the OSM slabs stay)")
+    ap.add_argument("--no-street-osm", action="store_true",
+                    help="do not ask OSM for the shops and cafes at the facades and mapped wall materials/colours "
+                         "(shopfront ground floors then come from the use registers alone, on every street wall)")
     ap.add_argument("--region", default=None, help="facade region (nl, eu, south, us, jp; default: by country)")
     ap.add_argument("--procedural-min-height", type=float, default=facades.PROCEDURAL_MIN_HEIGHT_M,
                     help="buildings at least this high to the eaves (m) may take bake_level.py's "
@@ -103,10 +106,25 @@ def main(argv=None, default_source="auto"):
                 print(f"ortho: {op.name} {ortho[0].shape[1]}x{ortho[0].shape[0]} px")
         else:
             print("ortho: none found; roofs get a plain roof material")
+    street = None
+    if looks and not args.no_street_osm:
+        from twinmodel.ingest import street_osm
+        s, w, n, e = man["bbox_wgs84"]
+        try:
+            raw = street_osm.fetch((s, w, n, e), build / "osm_street")
+        except Exception as exc:  # noqa: BLE001 - the facades stand without it
+            print(f"street osm: failed ({type(exc).__name__}: {exc})")
+            raw = None
+        street = street_osm.to_model(raw, realbuildings.model_proj(man))
+        if street is None:
+            print("street osm: no Overpass server answered; shopfronts from the use registers alone")
+        else:
+            print(f"street osm: {len(street['pois'])} ground-floor shops and cafes, "
+                  f"{len(street['buildings'])} buildings with a mapped wall material or colour")
     realbuildings.apply(build, man, blds, source, looks=looks, ortho=ortho,
                         ortho_label=realbuildings.ortho_credit(build), texture_px=args.texture_px,
                         roof_px=args.roof_px, procedural_min_height=args.procedural_min_height,
-                        window_lights=not args.no_window_lights)
+                        window_lights=not args.no_window_lights, street=street)
     return 0
 
 

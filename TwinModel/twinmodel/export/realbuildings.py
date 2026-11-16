@@ -265,6 +265,64 @@ def is_real(b: dict) -> bool:
     return bool(b.get("real")) or str(b.get("id", "")).startswith("NL.IMBAG")
 
 
+# --------------------------------------------------------------------------- the street side (OSM)
+
+SHOP_POI_M = 6.0    # a shop or cafe this close to a building's walls (outside, or inside near the wall) is its own
+SHOP_WALL_SLACK_M = 1.5   # the walls nearest one of its shops (to this much more than the nearest) get a shopfront
+
+
+def street_matches(polys: list, tree, street: Optional[dict]):
+    """({building index: [(x, y, distance to its walls) of its ground-floor shops]}, {building index: OSM wall
+    tags}) for
+    street_osm.to_model's points: a shop goes to the building that contains it, else the nearest within
+    SHOP_POI_M; one deep inside a large building (a mall's inner shops) counts for none."""
+    import shapely
+
+    shops, tags = defaultdict(list), {}
+    if not street:
+        return shops, tags
+    for x, y, _t in street.get("pois", ()):
+        pt = shapely.Point(x, y)
+        best, best_d = None, SHOP_POI_M
+        for j in tree.query(pt.buffer(SHOP_POI_M)):
+            poly = polys[j]
+            if poly is None or poly.is_empty:
+                continue
+            d = poly.exterior.distance(pt)
+            inside = poly.contains(pt)
+            if inside and d <= SHOP_POI_M:
+                best, best_d, wall_d = j, -1.0, d     # inside wins over any outside neighbour
+                break
+            if not inside and d < best_d:
+                best, best_d, wall_d = j, d, d
+        if best is not None:
+            shops[int(best)].append((x, y, float(wall_d)))
+    for x, y, t in street.get("buildings", ()):
+        hit = tree.query(shapely.Point(x, y), predicate="within")
+        if len(hit):
+            tags[int(hit[0])] = t
+    return shops, tags
+
+
+def shop_wall(ring: np.ndarray, shops: list) -> bool:
+    """Whether a wall (its outer ring, model frame) gets the shopfront: always when the building's shops are
+    not known by position (BAG uses alone), else when it is one of the walls nearest a shop (within
+    SHOP_WALL_SLACK_M of that shop's distance to the footprint: a corner shop gets both of its walls)."""
+    if not shops:
+        return True
+    foot = ring[ring[:, 2] <= ring[:, 2].min() + 0.5][:, :2]
+    if len(foot) == 0:
+        return True
+    # the foot line: a wall is a vertical plane, so its lowest points lie on one segment
+    seg = foot[np.argmax(np.linalg.norm(foot - foot[0], axis=1))] - foot[0]
+    for x, y, d in shops:
+        p = np.array([x, y])
+        t = 0.0 if not seg.any() else float(np.clip((p - foot[0]) @ seg / (seg @ seg), 0.0, 1.0))
+        if np.linalg.norm(foot[0] + t * seg - p) <= d + SHOP_WALL_SLACK_M:
+            return True
+    return False
+
+
 # --------------------------------------------------------------------------- meshes and manifest
 
 class _Builder:
@@ -345,9 +403,15 @@ def atlas_uv(uv: np.ndarray, rect, atlas_px: int = ATLAS_PX) -> np.ndarray:
 
 def apply(build: Path, man: dict, buildings: list, source: Source, *, looks: bool = True,
           ortho=None, ortho_label: str = "", texture_px: Optional[int] = None, roof_px: int = 1024,
-          procedural_min_height: Optional[float] = None, window_lights: bool = True) -> dict:
+          procedural_min_height: Optional[float] = None, window_lights: bool = True,
+          street: Optional[dict] = None) -> dict:
     """Mesh, style and texture ``buildings`` and swap them into the bake export ``build``/ue (its
-    manifest ``man`` is updated in place and written). Returns the manifest's stats."""
+    manifest ``man`` is updated in place and written). Returns the manifest's stats.
+
+    ``street`` (twinmodel.ingest.street_osm.to_model, None: unknown) adds what OSM maps at the street side:
+    ground-floor shops and cafes within SHOP_POI_M of a building's walls give it a shopfront ground floor on
+    the walls near them (without it the BAG units' uses decide, on every street wall), and a mapped
+    building:material / building:colour picks the wall and its colour."""
     import shapely
     from shapely.geometry import Polygon
     from shapely.strtree import STRtree
@@ -380,18 +444,23 @@ def apply(build: Path, man: dict, buildings: list, source: Source, *, looks: boo
     # ---- styles
     polys = [b.poly if b.poly is not None else Polygon() for b in buildings]
     tree = STRtree(polys)
+    shop_xy, wall_tags = street_matches(polys, tree, street)
     styles_n = defaultdict(int)
     info = []
-    for b in buildings:
+    for k, b in enumerate(buildings):
         cat = None
         if osm_tree is not None and b.poly is not None and not b.poly.is_empty:
             hit = osm_tree.query(b.poly.representative_point(), predicate="within")
             cat = osm_cat[hit[0]] if len(hit) else None
+        tags = wall_tags.get(k, {})
         bi_ = facades.BuildingInfo(id=b.id, year=b.year, uses=b.uses, height_m=b.height,
                                    area_m2=b.poly.area if b.poly is not None else 0.0, osm_category=cat,
-                                   region=b.region)
+                                   region=b.region, shop_pois=None if street is None else len(shop_xy.get(k, ())),
+                                   material=tags.get("building:facade:material") or tags.get("building:material"))
         style, shop = facades.classify(bi_) if looks else ("plain", False)
-        info.append({"style": style, "shop": shop, "osm_category": cat})
+        colour = facades.parse_colour(tags.get("building:facade:colour") or tags.get("building:colour"))
+        info.append({"style": style, "shop": shop, "osm_category": cat, "colour": colour,
+                     "shop_xy": shop_xy.get(k, []) if shop else []})
         styles_n[style] += 1
 
     # ---- meshes
@@ -399,7 +468,7 @@ def apply(build: Path, man: dict, buildings: list, source: Source, *, looks: boo
     photo = defaultdict(lambda: {"images": {}, "parts": []})   # tile -> the source's photo-textured surfaces
     n_textured = 0
     used_keys = set()
-    n_buildings = n_parts = n_tris = n_party = n_plain_roof = 0
+    n_buildings = n_parts = n_tris = n_party = n_plain_roof = n_shop_walls = 0
     boundaries = [p.exterior if p is not None and not p.is_empty else None for p in polys]
     for k, b in enumerate(buildings):
         i = info[k]
@@ -412,7 +481,7 @@ def apply(build: Path, man: dict, buildings: list, source: Source, *, looks: boo
         photo_roof = ortho is not None and (source.roof_photo_max_m is None or b.height <= source.roof_photo_max_m)
         st = facades.STYLES.get(i["style"]) if looks else None
         if st is not None:
-            var = facades.variant_of(st.name, b.id)
+            var = facades.variant_of(st.name, b.id, i["colour"])
             low_h = facades.SHOP_FLOOR_M if i["shop"] else 0.0
             n_st, storey_h = facades.storeys_for(b.height - low_h, st.storey_m)
             blank = facades.STYLES[facades.BLANK_OF.get(st.name, "blank_brick")]
@@ -485,7 +554,8 @@ def apply(build: Path, man: dict, buildings: list, source: Source, *, looks: boo
             ring0 = rings[0]
             off = facades.light_offset(b.id, n_wall)   # each wall shows another part of the night mask
             n_wall += 1
-            if i["shop"]:
+            if i["shop"] and shop_wall(ring0, i["shop_xy"]):
+                n_shop_walls += 1
                 (vb, tb_), (va, ta) = facades.clip_triangles(v, tri, ground + facades.SHOP_FLOOR_M)
                 if len(tb_):
                     add_wall(shop_key, vb, tb_, lambda vv: facades.wall_uv(
@@ -650,6 +720,12 @@ def apply(build: Path, man: dict, buildings: list, source: Source, *, looks: boo
         if source.roof_photo_max_m is not None and ortho is not None:
             man["stats"]["roof_plain_tall"] = n_plain_roof
         man["stats"]["procedural_capable"] = sum(1 for i in info if i.get("procedural"))
+        man["stats"]["shopfront_buildings"] = sum(1 for i in info if i["shop"] or i["style"] == "shopfront")
+        man["stats"]["shopfront_walls"] = n_shop_walls
+        if street is not None:
+            man["stats"]["street_osm"] = {"pois": len(street.get("pois", ())),
+                                          "pois_at_buildings": sum(len(v) for v in shop_xy.values()),
+                                          "buildings_with_wall_tags": len(wall_tags)}
         if n_textured:
             man["stats"]["photo_textured_surfaces"] = n_textured
             man["stats"]["photo_atlases"] = len(atlases)

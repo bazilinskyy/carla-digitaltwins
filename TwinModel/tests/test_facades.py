@@ -15,9 +15,15 @@ def _info(**kw):
 
 @pytest.mark.parametrize("kw,style,shop", [
     (dict(year=1920), "brick_old", False),
-    (dict(year=1955), "brick_postwar", False),
+    (dict(year=1955), "brick_wederopbouw", False),
+    (dict(year=1972), "brick_late", False),
     (dict(year=1985), "brick_modern", False),
-    (dict(year=1960, uses={"woonfunctie": 300, "winkelfunctie": 120}, height_m=10.0), "brick_postwar", True),
+    (dict(year=None), "brick_postwar", False),
+    (dict(year=1960, uses={"woonfunctie": 300, "winkelfunctie": 120}, height_m=10.0), "brick_wederopbouw", True),
+    (dict(year=1960, uses={"woonfunctie": 300, "winkelfunctie": 120}, height_m=10.0, region="eu"),
+     "brick_postwar", True),                                                         # outside nl: as before
+    (dict(year=1992, uses={"kantoorfunctie": 2000}, height_m=15.0), "office_brick", False),
+    (dict(year=1992, uses={"onderwijsfunctie": 2000}, height_m=15.0), "office_glass", False),
     (dict(year=1970, uses={"kantoorfunctie": 2000}, height_m=20.0), "office_concrete", False),
     (dict(year=2005, uses={"kantoorfunctie": 2000}, height_m=40.0), "office_glass", False),
     (dict(year=1990, uses={"industriefunctie": 900}), "industrial", False),
@@ -30,11 +36,78 @@ def test_classify(kw, style, shop):
 
 
 def test_classify_render_is_deterministic_share_of_modern_homes():
-    picks = [fc.classify(_info(id="b%d" % i, year=2005))[0] for i in range(300)]
+    picks = [fc.classify(_info(id="b%d" % i, year=2005, region="eu"))[0] for i in range(300)]
     share = picks.count("render_modern") / len(picks)
     assert set(picks) <= {"render_modern", "brick_modern"}
     assert 0.2 < share < 0.45
-    assert picks == [fc.classify(_info(id="b%d" % i, year=2005))[0] for i in range(300)]
+    assert picks == [fc.classify(_info(id="b%d" % i, year=2005, region="eu"))[0] for i in range(300)]
+    # the Netherlands from 1995: a quarter rendered, the rest today's light, anthracite or red brick
+    nl = [fc.classify(_info(id="b%d" % i, year=2005))[0] for i in range(300)]
+    assert set(nl) == {"render_modern", "brick_contemporary"}
+    assert 0.15 < nl.count("render_modern") / 300 < 0.35
+
+
+def test_nl_flats_of_the_1960s_and_70s_are_partly_concrete_panels():
+    picks = [fc.classify(_info(id="f%d" % i, year=1968, height_m=14.0))[0] for i in range(300)]
+    assert set(picks) == {"concrete_panel", "brick_late"}
+    assert 0.55 < picks.count("concrete_panel") / 300 < 0.8
+    assert {fc.classify(_info(id="f%d" % i, year=1968, height_m=7.0))[0] for i in range(50)} == {"brick_late"}
+
+
+@pytest.mark.parametrize("kw,shop", [
+    (dict(uses={"woonfunctie": 300, "winkelfunctie": 120}, height_m=10.0, shop_pois=0), True),   # BAG shop unit
+    (dict(uses={"woonfunctie": 300}, height_m=10.0, shop_pois=2), True),          # OSM shop, units say homes
+    (dict(uses={"woonfunctie": 300, "bijeenkomstfunctie": 80}, height_m=10.0), True),   # unknown POIs: as before
+    (dict(uses={"woonfunctie": 300, "bijeenkomstfunctie": 80}, height_m=10.0, shop_pois=0), False),
+    (dict(uses={"woonfunctie": 300, "bijeenkomstfunctie": 80}, height_m=10.0, shop_pois=1), True),   # a cafe
+])
+def test_shop_floor_from_osm_shops(kw, shop):
+    assert fc.classify(_info(**kw))[1] is shop
+
+
+def test_assembly_halls_without_shops_are_not_shopfronts():
+    # a one-storey lecture hall (bijeenkomstfunctie) on the TU/e campus: with OSM shops known, no shopfront
+    hall = dict(year=1963, uses={"bijeenkomstfunctie": 6000, "industriefunctie": 50}, height_m=4.2, area_m2=5000.0)
+    assert fc.classify(_info(**hall))[0] == "shopfront"                 # register alone: as before
+    assert fc.classify(_info(shop_pois=0, **hall)) == ("office_concrete", False)
+    assert fc.classify(_info(shop_pois=1, **hall))[0] == "shopfront"   # a mapped shop or cafe: a real shop
+
+
+def test_campus_buildings_without_units_are_not_sheds():
+    big = dict(year=1991, uses={}, height_m=4.0, area_m2=13000.0)
+    assert fc.classify(_info(**big))[0] == "industrial"
+    assert fc.classify(_info(osm_category="hospital", **big))[0] == "office_glass"
+    assert fc.classify(_info(osm_category="university", **big))[0] == "office_glass"
+
+
+@pytest.mark.parametrize("material,style", [
+    ("glass", "office_glass"), ("concrete", "concrete_panel"), ("plaster", "render_modern"),
+    ("brick", "brick_late"), ("stone", "stone_old"), ("wood", "brick_late"), ("metal", "industrial"),
+])
+def test_osm_material_overrides_the_wall(material, style):
+    assert fc.classify(_info(year=1972, height_m=7.0, material=material))[0] == style
+
+
+def test_osm_material_for_offices_and_colour_variants():
+    office = dict(year=1975, uses={"kantoorfunctie": 2000}, height_m=15.0)
+    assert fc.classify(_info(material="brick", **office))[0] == "office_brick"
+    assert fc.classify(_info(material="concrete", **office))[0] == "office_concrete"
+    # building:colour picks the nearest colour variant
+    cols = fc.STYLES["brick_contemporary"].colours
+    assert fc.variant_of("brick_contemporary", "x", fc.parse_colour("#525050")) == cols.index((82, 80, 80))
+    assert fc.variant_of("brick_contemporary", "x", fc.parse_colour("tan")) == cols.index((186, 164, 134))
+    assert fc.variant_of("brick_contemporary", "x") == fc.variant_of("brick_contemporary", "x", None)
+    assert fc.parse_colour("#fff") == (255, 255, 255) and fc.parse_colour("Light Grey") == (200, 200, 200)
+    assert fc.parse_colour("nonsense") is None and fc.parse_colour("#12") is None and fc.parse_colour("") is None
+
+
+def test_floor_bands_are_drawn():
+    st = fc.STYLES["brick_wederopbouw"]
+    alb, _, _ = fc.synth_facade(st, 0, px=256)
+    band_rows = alb[256 - 3:256, :, :].reshape(-1, 3).mean(axis=0)    # the band just above the floor
+    assert np.allclose(band_rows, st.band, atol=12)
+    assert all(fc.BLANK_OF.get(n, "blank_brick") in fc.STYLES for n in fc.STYLES)
+    assert fc.PROCEDURAL_STYLES <= set(fc.STYLES)
 
 
 def test_storeys_fit_the_eaves():

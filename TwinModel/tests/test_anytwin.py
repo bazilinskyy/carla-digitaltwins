@@ -305,7 +305,7 @@ def test_south_facades():
                                              region="south"))
     assert old_uni == "stone_old"
     nl, _ = fc.classify(fc.BuildingInfo(id="a", year=1975, uses={"residential": 1}, height_m=15, area_m2=300))
-    assert nl == "brick_postwar"                                # the Netherlands unchanged
+    assert nl in ("brick_late", "concrete_panel")               # the Netherlands: its own eras (facades.py)
     for name in ("stone_old", "render_warm"):
         alb, nrm, orm = fc.synth_facade(fc.STYLES[name], 0, px=64)
         assert alb.shape == (64, 64, 3) and fc.USE_OF_STYLE[name] == "home"

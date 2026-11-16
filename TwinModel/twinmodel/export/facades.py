@@ -58,12 +58,34 @@ class Style:
     brick_m: tuple = (0.22, 0.0625)   # brick length incl. joint, course height
     shop: bool = False          # shopfront: sign band, door
     blank: bool = False         # no windows at all
+    band: Optional[tuple] = None   # a horizontal band at every floor (concrete floor edge, stone string course)
+    band_m: float = 0.25           # its height
 
 
 STYLES = {s.name: s for s in (
-    # pre-war Dutch brick: tall windows, white frames, transom, darker lintels
-    Style("brick_old", 2.4, 3.2, "brick", ((122, 52, 38), (98, 46, 36)),
-          window=(0.28, 0.72, 0.22, 0.86), frame=(236, 234, 226), mullions=1, transom=True, lintel=True),
+    # pre-war Dutch brick: tall windows, white frames, transom, darker lintels, a light string course per floor
+    # (Eindhoven's Vestdijk, Kerkstraat, Stratumseind: orange-red and dark brown-grey brick, street photos
+    # 2025; the first two colours were darker before 2026-11-16)
+    Style("brick_old", 2.4, 3.2, "brick", ((152, 74, 52), (124, 60, 44), (98, 82, 72)),
+          window=(0.28, 0.72, 0.22, 0.86), frame=(240, 238, 230), mullions=1, transom=True, lintel=True,
+          band=(214, 206, 188), band_m=0.14),
+    # Dutch reconstruction 1940-1964 (wederopbouw: the Eindhoven centre after 1942-44): buff and yellow-brown
+    # brick, wide steel windows with white frames, concrete floor edges
+    Style("brick_wederopbouw", 3.0, 3.0, "brick", ((178, 140, 98), (156, 112, 78), (190, 164, 124)),
+          window=(0.10, 0.90, 0.28, 0.84), frame=(228, 226, 218), mullions=2, band=(188, 184, 174), band_m=0.25),
+    # 1965-1979: dark brown brick, wide windows in dark wooden frames, concrete floor edges
+    Style("brick_late", 3.0, 2.8, "brick", ((104, 72, 56), (122, 84, 62), (86, 66, 58)),
+          window=(0.08, 0.92, 0.30, 0.86), frame=(66, 48, 36), mullions=2, sill=False, band=(176, 172, 164),
+          band_m=0.30),
+    # 1960-1979 flats (galerijflats, system building): storey-high grey concrete panels, wide windows
+    Style("concrete_panel", 2.7, 2.8, "concrete", ((178, 174, 166), (160, 156, 148)),
+          window=(0.12, 0.88, 0.32, 0.86), frame=(225, 225, 220), mullions=1, sill=False),
+    # homes from 1995: buff, anthracite, red or light grey brick, tall windows in anthracite aluminium frames
+    Style("brick_contemporary", 2.7, 3.0, "brick", ((186, 164, 134), (82, 80, 80), (150, 82, 60), (200, 196, 188)),
+          window=(0.14, 0.86, 0.10, 0.90), frame=(52, 54, 58), mullions=1, sill=False),
+    # offices 1985-1999 below 25 m: brick spandrels between ribbon windows
+    Style("office_brick", 3.6, 3.4, "brick", ((132, 72, 54), (170, 146, 112)),
+          window=(0.05, 0.95, 0.30, 0.88), frame=(90, 92, 96), mullions=2, sill=False),
     # post-war reconstruction (most of the Eindhoven centre): wide windows, darker frames
     Style("brick_postwar", 3.0, 2.9, "brick", ((150, 98, 66), (128, 82, 58)),
           window=(0.12, 0.88, 0.30, 0.82), frame=(70, 60, 52), mullions=2),
@@ -72,7 +94,7 @@ STYLES = {s.name: s for s in (
     Style("render_modern", 3.0, 3.0, "render", ((228, 224, 214), (205, 200, 190)),
           window=(0.15, 0.85, 0.15, 0.88), frame=(55, 57, 60), mullions=1, sill=False),
     # offices: ribbon windows between concrete spandrels / a curtain wall
-    Style("office_concrete", 3.6, 3.4, "concrete", ((172, 168, 160),),
+    Style("office_concrete", 3.6, 3.4, "concrete", ((172, 168, 160), (198, 196, 190)),
           window=(0.04, 0.96, 0.32, 0.86), frame=(80, 82, 85), mullions=2, sill=False),
     Style("office_glass", 1.8, 3.6, "glass", ((70, 82, 92),),
           window=(0.03, 0.97, 0.08, 0.97), frame=(150, 155, 160), frame_m=0.05, sill=False,
@@ -98,12 +120,15 @@ STYLES = {s.name: s for s in (
           window=(0.22, 0.78, 0.12, 0.86), frame=(70, 66, 58), mullions=1, sill=True),
     # party walls, narrow walls, sheds: plain wall at true brick scale
     Style("blank_brick", 2.5, 3.0, "brick", ((132, 60, 44), (110, 80, 62)), blank=True, sill=False),
+    # the plain wall of the light and buff brick styles
+    Style("blank_brick_light", 2.5, 3.0, "brick", ((178, 148, 110), (160, 150, 140)), blank=True, sill=False),
 )}
 
 # style -> the plain wall its party walls get
 BLANK_OF = {"stone_prewar": "blank_brick", "stone_old": "blank_brick", "render_warm": "blank_brick",
             "render_modern": "blank_brick", "office_concrete": "blank_brick", "office_glass": "blank_brick",
-            "industrial": "industrial", "shopfront": "blank_brick"}
+            "industrial": "industrial", "shopfront": "blank_brick", "brick_wederopbouw": "blank_brick_light",
+            "brick_contemporary": "blank_brick_light", "concrete_panel": "blank_brick", "office_brick": "blank_brick"}
 
 
 def _crc(*parts) -> int:
@@ -114,8 +139,43 @@ def material_key(style: str, variant: int) -> str:
     return "facade_%s_%d" % (style, variant)
 
 
-def variant_of(style: str, building_id: str) -> int:
-    return _crc(style, building_id) % len(STYLES[style].colours)
+def variant_of(style: str, building_id: str, colour: Optional[tuple] = None) -> int:
+    """The colour variant of a style for a building: the one nearest the mapped wall colour (OSM
+    building:colour) when there is one, else a stable pick from the building id."""
+    cols = STYLES[style].colours
+    if colour is not None and len(cols) > 1:
+        return int(min(range(len(cols)), key=lambda k: sum((a - b) ** 2 for a, b in zip(cols[k], colour))))
+    return _crc(style, building_id) % len(cols)
+
+
+# OSM colour values (building:colour, building:facade:colour): CSS names people use, and #rrggbb
+NAMED_COLOURS = {
+    "white": (240, 240, 236), "black": (30, 30, 30), "grey": (128, 128, 128), "gray": (128, 128, 128),
+    "lightgrey": (200, 200, 200), "lightgray": (200, 200, 200), "darkgrey": (90, 90, 90),
+    "darkgray": (90, 90, 90), "silver": (192, 192, 192), "red": (150, 60, 45), "darkred": (110, 40, 35),
+    "maroon": (110, 40, 35), "brown": (120, 80, 60), "sienna": (160, 82, 45), "orange": (200, 120, 60),
+    "yellow": (220, 200, 120), "beige": (225, 210, 180), "tan": (210, 180, 140), "wheat": (225, 205, 165),
+    "khaki": (200, 190, 140), "ivory": (240, 236, 220), "cream": (236, 226, 200), "pink": (230, 180, 175),
+    "salmon": (220, 140, 115), "green": (90, 120, 80), "blue": (80, 100, 140), "lightblue": (170, 200, 220),
+    "brick": (150, 70, 50), "sand": (215, 195, 155), "terracotta": (190, 100, 70)}
+
+
+def parse_colour(text) -> Optional[tuple]:
+    """(r, g, b) of an OSM colour value (#rgb, #rrggbb or a name), or None."""
+    if not text:
+        return None
+    t = str(text).strip().lower().split(";")[0].replace(" ", "").replace("_", "")
+    if t.startswith("#"):
+        h = t[1:]
+        if len(h) == 3:
+            h = "".join(c * 2 for c in h)
+        if len(h) == 6:
+            try:
+                return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+            except ValueError:
+                return None
+        return None
+    return NAMED_COLOURS.get(t)
 
 
 # --------------------------------------------------------------------------- classification
@@ -125,6 +185,7 @@ def variant_of(style: str, building_id: str) -> int:
 OFFICE_USES = {"kantoorfunctie", "onderwijsfunctie", "gezondheidszorgfunctie", "logiesfunctie", "celfunctie",
                "office", "education", "health", "hotel", "government"}
 SHOP_USES = {"winkelfunctie", "bijeenkomstfunctie", "retail", "assembly"}
+RETAIL_USES = {"winkelfunctie", "retail"}   # shops proper; assembly (bijeenkomst) also covers halls and auditoria
 INDUSTRY_USES = {"industriefunctie", "industry", "storage", "utility"}
 INDUSTRIAL_MAX_M = 30.0   # taller "industrial" buildings are towers on oddly registered lots: not metal sheds
 OSM_INDUSTRY = {"industrial", "warehouse", "hangar", "factory", "manufacture"}
@@ -143,6 +204,8 @@ class BuildingInfo:
     osm_category: Optional[str] = None
     region: str = "nl"                         # "us": pre-war high-rise is stone; "jp": homes are rendered;
                                                # "south": stone before 1940, warm render after (no brick)
+    shop_pois: Optional[int] = None            # ground-floor shops, cafes, ... (OSM) at the facade; None: unknown
+    material: Optional[str] = None             # OSM building:material / building:facade:material
 
 
 def dominant_use(uses: dict) -> Optional[str]:
@@ -151,17 +214,79 @@ def dominant_use(uses: dict) -> Optional[str]:
     return max(sorted(uses), key=lambda k: uses[k])
 
 
+# OSM building:material -> the wall it means
+MATERIAL_WALL = {"glass": "glass", "concrete": "concrete", "reinforced_concrete": "concrete", "brick": "brick",
+                 "bricks": "brick", "clinker": "brick", "plaster": "render", "render": "render", "stucco": "render",
+                 "plastered": "render", "metal": "metal", "steel": "metal", "aluminium": "metal",
+                 "metal_plates": "metal", "stone": "stone", "sandstone": "stone", "limestone": "stone",
+                 "granite": "stone", "marble": "stone"}
+CAMPUS_CATS = {"university", "college", "school", "hospital", "public", "civic", "government"}
+
+
+def _nl_home(b: BuildingInfo, year: int) -> str:
+    """The Dutch facade of a home or mixed block by its construction year (BAG oorspronkelijkbouwjaar)."""
+    if 0 < year < 1940:
+        return "brick_old"
+    if year == 0:
+        return "brick_postwar"
+    if year < 1965:
+        return "brick_wederopbouw"
+    if year < 1980:
+        # flats of four storeys and more: a share are concrete system building, the rest brick
+        if b.height_m >= 11.5 and year >= 1960 and _crc("panel", b.id) % 3 < 2:
+            return "concrete_panel"
+        return "brick_late"
+    if year < 1995:
+        return "brick_modern"
+    if _crc("render", b.id) % 4 == 0:
+        return "render_modern"
+    return "brick_contemporary"
+
+
+def _by_material(b: BuildingInfo, style: str, home: bool) -> str:
+    """The style an OSM building:material asks for, given the style the year and use chose."""
+    wall = MATERIAL_WALL.get((b.material or "").strip().lower().split(";")[0])
+    if wall is None or STYLES[style].wall == wall or style in ("shopfront", "blank_brick", "industrial"):
+        return style
+    if wall == "glass":
+        return "office_glass"
+    if wall == "concrete":
+        return "concrete_panel" if home else "office_concrete"
+    if wall == "metal":
+        return "industrial" if b.height_m < INDUSTRIAL_MAX_M else "office_glass"
+    if wall == "stone":
+        return "stone_prewar" if b.region == "us" else "stone_old"
+    if wall == "render":
+        return "render_warm" if b.region == "south" else "render_modern"
+    if wall == "brick":
+        if not home:
+            return "office_brick"
+        return "brick_contemporary" if b.region == "nl" and style == "render_modern" else \
+            ("brick_modern" if style.startswith(("render", "stone")) else style)
+    return style
+
+
 def classify(b: BuildingInfo) -> tuple[str, bool]:
     """(facade style, shopfront ground floor) for a building."""
+    style, shop = _classify(b)
+    home = USE_OF_STYLE.get(style) == "home"
+    return _by_material(b, style, home), shop
+
+
+def _classify(b: BuildingInfo) -> tuple[str, bool]:
     use = dominant_use(b.uses)
-    shops = any(u in SHOP_USES for u in b.uses)
+    retail = any(u in RETAIL_USES for u in b.uses)
+    if b.shop_pois is None:      # no OSM shops at hand: the units' uses alone, as before
+        shops = any(u in SHOP_USES for u in b.uses)
+    else:                        # a shop unit (BAG), or a shop or cafe mapped at the facade
+        shops = retail or b.shop_pois > 0
     year = b.year or 0
     cat = (b.osm_category or "").lower()
     small = b.area_m2 < 40.0 and b.height_m < 4.0
     if small or (not b.uses and cat in OSM_SHED):
         return "blank_brick", False
-    if (use in INDUSTRY_USES or (not b.uses and cat in OSM_INDUSTRY) or
-            (use is None and b.area_m2 > 1500.0 and b.height_m < 10.0)) and b.height_m < INDUSTRIAL_MAX_M:
+    big_low = use is None and b.area_m2 > 1500.0 and b.height_m < 10.0 and cat not in CAMPUS_CATS
+    if (use in INDUSTRY_USES or (not b.uses and cat in OSM_INDUSTRY) or big_low) and b.height_m < INDUSTRIAL_MAX_M:
         return "industrial", False
     if use in INDUSTRY_USES:   # a tower on a lot registered as utility or storage (New York): an office look
         use = "office"
@@ -170,13 +295,18 @@ def classify(b: BuildingInfo) -> tuple[str, bool]:
         return "stone_prewar", shop_floor   # Manhattan's pre-war towers and apartment blocks
     if b.region == "south" and 0 < year < 1940 and b.height_m < 40.0:
         return "stone_old", shop_floor      # old public buildings, churches, colleges: stone, not office glass
+    one_storey_shop = b.height_m < SHOP_FLOOR_M + 2.5 and (
+        use in SHOP_USES if b.shop_pois is None else (use in RETAIL_USES or (use in SHOP_USES and b.shop_pois > 0)))
+    if one_storey_shop:
+        return "shopfront", False   # a one-storey shop: shopfront all the way up
     if use in OFFICE_USES or (use is None and cat in OSM_OFFICE) or \
-            (use in SHOP_USES and b.height_m >= 12.0):
+            (use in SHOP_USES and b.height_m >= 12.0) or \
+            (use in SHOP_USES and use not in RETAIL_USES and b.shop_pois == 0):   # a hall, an auditorium
         if year >= 1985 or (year == 0 and b.height_m >= 25.0):
+            if b.region == "nl" and year < 2000 and b.height_m < 25.0 and use in ("kantoorfunctie", "office"):
+                return "office_brick", shop_floor     # Dutch offices of the late 1980s and 1990s
             return "office_glass", shop_floor
         return "office_concrete", shop_floor
-    if use in SHOP_USES and b.height_m < SHOP_FLOOR_M + 2.5:
-        return "shopfront", False   # a one-storey shop: shopfront all the way up
     # homes and mixed blocks
     if b.region == "jp":
         return "render_modern", shop_floor   # Japanese homes and apartment blocks: render and tiles, not brick
@@ -186,6 +316,8 @@ def classify(b: BuildingInfo) -> tuple[str, bool]:
         if year == 0 and _crc("south", b.id) % 4 == 0:
             return "stone_old", shop_floor   # no year (Overture, OSM): a quarter of the old stock
         return "render_warm", shop_floor
+    if b.region == "nl":
+        return _nl_home(b, year), shop_floor
     if 0 < year < 1940:
         return "brick_old", shop_floor
     if year < 1980:
@@ -201,13 +333,14 @@ def classify(b: BuildingInfo) -> tuple[str, bool]:
 PROCEDURAL_FAMILY_MIN_M = {"Skysc21": 9.6, "Skysc19": 15.4}
 PROCEDURAL_MIN_HEIGHT_M = min(PROCEDURAL_FAMILY_MIN_M.values())
 PROCEDURAL_SIMPLIFY_M = 1.0   # footprint simplification before the generator (its modules are 5 m wide)
-PROCEDURAL_STYLES = {"brick_old", "brick_postwar", "brick_modern", "render_modern", "office_concrete", "office_glass"}
+PROCEDURAL_STYLES = {"brick_old", "brick_postwar", "brick_modern", "render_modern", "office_concrete", "office_glass",
+                     "brick_wederopbouw", "brick_late", "concrete_panel", "brick_contemporary", "office_brick"}
 
 
 def procedural_family(style: str, height_m: float = 1e9) -> str:
     """bake_level.FAMILIES member for a building: the glass office kit for offices tall enough for its
     5 m storeys, else the apartment kit."""
-    if style in ("office_glass", "office_concrete") and height_m >= PROCEDURAL_FAMILY_MIN_M["Skysc19"]:
+    if style in ("office_glass", "office_concrete", "office_brick") and height_m >= PROCEDURAL_FAMILY_MIN_M["Skysc19"]:
         return "Skysc19"
     return "Skysc21"
 
@@ -386,6 +519,13 @@ def synth_facade(style: Style, variant: int = 0, px: int = TEX_PX, seed: int = 0
     rough = np.full((h, w), 0.88 if style.wall in ("brick", "render", "concrete") else 0.45)
     metal = np.full((h, w), 0.5 if style.wall == "metal" else 0.0)
     ao = np.ones((h, w))
+    if style.band is not None:   # floor edge / string course: a band just above every storey's floor
+        bpx = max(2, int(round(style.band_m / style.storey_m * h / TEX_STOREYS)))
+        for sy in range(TEX_STOREYS):
+            floor = int(round((sy + 1) * h / TEX_STOREYS))
+            col[floor - bpx:floor] = np.asarray(style.band, float) * rng.uniform(0.96, 1.04)
+            height[floor - bpx:floor] = 0.25
+            rough[floor - bpx:floor] = 0.85
     if not style.blank:
         bw, sh = w / TEX_BAYS, h / TEX_STOREYS
         fpx = _frame_px(style, bw)
@@ -477,8 +617,9 @@ LIGHT_COOL_SHARE = 0.12   # lit windows with cool white light (LED, screens) ins
 # The styles come from the BAG use of the units (classify): homes and mixed blocks, offices (also
 # schools, hospitals, hotels), the shopfront ground floor, industry; plain walls have no windows.
 USE_OF_STYLE = {"stone_prewar": "home", "stone_old": "home", "render_warm": "home", "brick_old": "home", "brick_postwar": "home", "brick_modern": "home", "render_modern": "home",
-                "office_concrete": "office", "office_glass": "office", "shopfront": "shop",
-                "industrial": "industry"}
+                "brick_wederopbouw": "home", "brick_late": "home", "concrete_panel": "home",
+                "brick_contemporary": "home", "office_concrete": "office", "office_glass": "office",
+                "office_brick": "office", "shopfront": "shop", "industrial": "industry"}
 
 
 def light_offset(building_id: str, wall: int) -> tuple[int, int]:
