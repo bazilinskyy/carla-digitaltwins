@@ -554,7 +554,6 @@ def plan(blds: list, cor: Corridor, graze_m: float = GRAZE_M, sliver_m: float = 
     regions, decisions = [], []
     for bi, b in enumerate(blds):
         fb = b.poly.buffer(FOOT_BUFFER_M, join_style="mitre", mitre_limit=2.0)
-        roads_near = [(z, zs) for z, zs in (cor.local(lay, "road", fb) for lay in cor.layers()) if z is not None]
         zones = []
         for layer in cor.layers():
             for group in ("road", "walk"):
@@ -564,13 +563,8 @@ def plan(blds: list, cor: Corridor, graze_m: float = GRAZE_M, sliver_m: float = 
                 if group == "walk" and (layer, "walk") not in cor.quads:
                     # sidewalk meshes without lanes: keep only their middle (a facade on the edge is fine)
                     zone = zone.buffer(-1.0)
-                if group == "walk" and roads_near:
-                    # sidewalks never cut inside a road corridor at their height (a road deck above an underpass
-                    # does not count)
-                    lo_z, hi_z = float(zs.min()) - 1.5, float(zs.max()) + 1.5
-                    near = [z for z, rz in roads_near if rz.min() <= hi_z and rz.max() >= lo_z]
-                    if near:
-                        zone = zone.difference(shapely.union_all(near))
+                # a sidewalk band overlapping a road corridor at the same height gives way to the road's taller cut
+                # in the overlap resolution below; one under a road deck (an underpass) keeps its own
                 zone = zone.intersection(fb)
                 if zone.is_empty:
                     continue
