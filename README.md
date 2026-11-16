@@ -203,6 +203,11 @@ counted them):
 | HelsinkiSenate (Overture) | 22 / 63 | 0 / 1 | 46 / 23 |
 | AmsterdamDam (3DBAG) | 17 / 477 | 0 / 0 | 434 / 177 |
 
+All eight levels were rebaked with the cut on lin5080 (2026-11-16; bakes 2-5 min, peak 9-21 GB with the navigation
+builders), load in a CARLA 1.0 server (371-400 spawn points, 20 of 20 navigation queries answered) and ran a 60 s
+co-simulated trial each (RTF 0.74-0.95, no collisions). Two sidewalk samples in Salamanca and one in Helsinki are
+still blocked (a wall where a sidewalk lane leaves a trimmed building; at a steep stair).
+
 ### 3. Bake the Unreal level
 
 Run inside the CARLA editor as a commandlet.
