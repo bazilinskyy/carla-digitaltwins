@@ -49,6 +49,8 @@ def main(argv=None, default_source="auto"):
     ap.add_argument("--no-global", action="store_true",
                     help="no Overture/OSM prisms where no national model covers the twin (the OSM slabs stay)")
     ap.add_argument("--region", default=None, help="facade region (nl, eu, south, us, jp; default: by country)")
+    ap.add_argument("--no-clearance", action="store_true",
+                    help="do not cut the buildings clear of the roads and sidewalks (twinmodel.export.clearance)")
     ap.add_argument("--procedural-min-height", type=float, default=facades.PROCEDURAL_MIN_HEIGHT_M,
                     help="buildings at least this high to the eaves (m) may take bake_level.py's "
                          "--buildings procedural facades: their walls below the eaves are written apart")
@@ -107,7 +109,20 @@ def main(argv=None, default_source="auto"):
                         ortho_label=realbuildings.ortho_credit(build), texture_px=args.texture_px,
                         roof_px=args.roof_px, procedural_min_height=args.procedural_min_height,
                         window_lights=not args.no_window_lights)
+    if not args.no_clearance:
+        keep_clear(build)
     return 0
+
+
+def keep_clear(build: Path):
+    """Cut the new building meshes clear of the road and sidewalk corridor (the xodr's lanes when this python
+    has the carla module, else the road meshes); tools/road_clearance.py also checks the result."""
+    from twinmodel.export import clearance
+    man = json.loads((build / "ue" / "manifest.json").read_text())
+    xodr = man.get("xodr") if man.get("xodr") and Path(man["xodr"]).exists() else \
+        next(iter(sorted(build.glob("*.xodr"))), None)
+    lanes = clearance.xodr_lanes(xodr) if xodr else None
+    clearance.apply(build, man, lanes=lanes, streets=clearance.osm_street_zones(build))
 
 
 def twin_country(build: Path):

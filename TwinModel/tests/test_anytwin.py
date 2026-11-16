@@ -556,7 +556,7 @@ def test_twin_runs_the_steps_and_writes_credits(monkeypatch, tmp_path, capsys):
                                            "--cache", str(tmp_path / "data")])
     assert args.func(args) == 0
     steps = [c[c.index("-m") + 2] if "-m" in c else Path(c[1]).name for c in ran]
-    assert steps == ["build", "bake-export", "real_buildings.py", "ground_photo.py"]
+    assert steps == ["build", "bake-export", "real_buildings.py", "ground_photo.py", "road_clearance.py"]
     text = capsys.readouterr().out
     assert "[twin] done build: terrain ign_wcs 790-810 m, photo ign_es" in text
     assert "[twin] skip bake:" in text and "validation findings" in text
@@ -566,10 +566,37 @@ def test_twin_runs_the_steps_and_writes_credits(monkeypatch, tmp_path, capsys):
     summ = json.loads((out / "twin.json").read_text())
     assert summ["level"] == "/Game/Carla/Maps/Twins/Sal/Sal" and summ["buildings"] == 3
     assert summ["country"] == "ES" and summ["region_plan"]["buildings"][0] == "catastro"
-    # a second run skips the steps done before
+    # a second run skips the steps done before (the clearance cut is always redone: it starts from the uncut meshes)
     ran.clear()
     assert args.func(args) == 0
-    assert ran == []
+    assert [Path(c[1]).name for c in ran] == ["road_clearance.py"]
+
+
+def test_twin_stops_when_lanes_stay_blocked(monkeypatch, tmp_path, capsys):
+    """The clearance check failing (exit 3) stops the twin before the bake, with the numbers in twin.json."""
+    out = tmp_path / "blk"
+    (out / "Blk.twin").mkdir(parents=True)
+    (out / "Blk.twin" / "model.json").write_text("{}")
+    (out / "Blk.xodr").write_text("<OpenDRIVE/>")
+    (out / "ue").mkdir()
+    (out / "ue" / "manifest.json").write_text(json.dumps({"name": "Blk", "stats": {"real_buildings": "osm"}}))
+    (out / "report.json").write_text(json.dumps({"profile": {"iso2": "ES"}, "build": {"imagery": {"source": "x"}}}))
+
+    def fake_run(cmd, log_path, cwd=None, watchdog=None, nice=0):
+        if str(cmd[1]).endswith("road_clearance.py"):
+            (out / "clearance.json").write_text(json.dumps({"ok": False, "cut": {"passage": 1, "trim": 0}, "after": {
+                "road": {"blocked": 3, "samples": 10, "hits": []}, "walk": {"blocked": 0, "samples": 5, "hits": []}}}))
+            return {"rc": 3, "seconds": 1.0, "peak_rss_gb": 0.0, "killed": None, "tail": ["clearance: FAILED"]}
+        return {"rc": 0, "seconds": 1.0, "peak_rss_gb": 0.0, "killed": None, "tail": []}
+    monkeypatch.setattr(twin, "run", fake_run)
+    from twinmodel import cli
+    args = cli._build_parser().parse_args(["twin", "--bbox", *map(str, SALAMANCA), "--name", "Blk", "--out", str(out),
+                                           "--cache", str(tmp_path / "data"), "--skip", "ground"])
+    assert args.func(args) == 2
+    text = capsys.readouterr().out
+    assert "[twin] failed clearance:" in text and "still stand on the lanes" in text
+    summ = json.loads((out / "twin.json").read_text())
+    assert summ["clearance"]["ok"] is False and summ["clearance"]["after"]["road"]["blocked"] == 3
 
 
 # --------------------------------------------------------------------------- left-hand traffic by mirroring

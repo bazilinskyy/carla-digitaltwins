@@ -12,6 +12,9 @@ Runs the whole pipeline with the best open data of the place's country (twinmode
 4. buildings  ``tools/real_buildings.py``: the national 3D or footprint model (3DBAG, PLATEAU, NYC, Catastro,
               BD TOPO), else Overture Maps, else OSM; facade styles, photo roofs, lit windows
 5. ground     ``tools/ground_photo.py``: the aerial photo on open ground (where the country has an open one)
+5b. clearance ``tools/road_clearance.py``: building geometry standing on the driving lanes (below 4.6 m) and
+              sidewalk lanes (below 2.5 m) is cut out and closed as a passage, or trimmed to the kerb; then
+              CARLA's lane samples are checked, and a twin with blocked lanes stops here (twin.json clearance)
 6. credits    ATTRIBUTION.md (every source with its licence), copied next to the level by the bake
 7. bake       ``ue/bake_level.py`` in the CARLA 1.0 editor (--bake; needs a CARLA ue58-dev source build with
               the editor), under a memory watchdog; the level is /Game/Carla/Maps/Twins/<Name>/<Name>
@@ -49,6 +52,7 @@ STEPS = [
     ("export", "Cutting the meshes for Unreal"),
     ("buildings", "Putting in the real buildings with facade styles"),
     ("ground", "Laying the aerial photo on the ground"),
+    ("clearance", "Keeping the roads and sidewalks clear of buildings"),
     ("credits", "Writing the data credits"),
     ("bake", "Baking the CARLA 1.0 level in the Unreal editor"),
     ("nav", "Building the pedestrian navigation (two more editor runs)"),
@@ -323,8 +327,23 @@ def twin(args) -> int:
             say("note", "ground", "CARLA's ground materials stay")
     else:
         say("skip", "ground", "no open aerial photo here: CARLA's ground materials stay")
+    # 5b. clearance (always redone: it starts from the uncut meshes, about a minute)
+    if man_path.exists():
+        ccmd = [py, TOOLS / "road_clearance.py", out, "--max-road", str(args.clearance_max_road),
+                "--max-walk", str(args.clearance_max_walk)]
+        ok = step("clearance", ccmd, lambda: False, lambda: _clearance_text(out))
+        rec = _json(out / "clearance.json") or {}
+        if rec:
+            summary["clearance"] = {"ok": rec.get("ok"), "cut": rec.get("cut"),
+                                    "after": {g: {k: v for k, v in r.items() if k not in ("hits", "worst")}
+                                              for g, r in (rec.get("after") or {}).items()}}
+        if not ok:
+            _write_summary(out, summary, man_path, t_start)
+            raise TwinError("Buildings still stand on the lanes after the clearance cut.",
+                            f"See {out / 'clearance.json'} (every blocked lane sample with lat/lon); raise "
+                            "--clearance-max-road/--clearance-max-walk or --skip clearance to bake anyway.")
     # 6. credits
-    say("start", "credits", STEPS[5][1])
+    say("start", "credits", STEPS[6][1])
     man = _json(man_path) or {}
     text = regions.attribution_text(name, rep, man, extra=("nominatim",) if args.place else ())
     (out / "ATTRIBUTION.md").write_text(text, encoding="utf-8")
@@ -439,6 +458,15 @@ def _ground_text(man_path: Path) -> str:
     return f"{gp.get('tiles', 0)} ground tiles with the aerial photo"
 
 
+def _clearance_text(out: Path) -> str:
+    rec = _json(out / "clearance.json") or {}
+    a, cut = rec.get("after") or {}, rec.get("cut") or {}
+    if not a:
+        return f"{cut.get('passage', 0)} passages, {cut.get('trim', 0)} trims (not checked: no carla module)"
+    return (f"{cut.get('passage', 0)} passages, {cut.get('trim', 0)} trims; blocked lane samples: "
+            f"{a['road']['blocked']} driving, {a['walk']['blocked']} sidewalk")
+
+
 def _bake_text(out: Path) -> str:
     rep = _json(out / "bake_report.json") or {}
     return (f"{rep.get('actors_placed', '?')} actors, {rep.get('textured_materials', '?')} textured materials, "
@@ -479,10 +507,14 @@ def add_parser(sub):
     t.add_argument("--out", help="build directory (default build/<name>)")
     t.add_argument("--cache", default="data", help="download cache (Overpass, photo, terrain)")
     t.add_argument("--profile", default="auto", help="region profile (default auto: by country)")
-    t.add_argument("--skip", help="comma-separated steps to skip: build,export,buildings,ground,bake,nav")
+    t.add_argument("--skip", help="comma-separated steps to skip: build,export,buildings,ground,clearance,bake,nav")
     t.add_argument("--force", action="store_true", help="redo steps done before")
     t.add_argument("--no-global-buildings", action="store_true",
                    help="where no national building model exists keep the OSM blocks (no Overture/OSM prisms)")
+    t.add_argument("--clearance-max-road", type=int, default=0,
+                   help="driving-lane samples a building may still block after the clearance cut (default 0)")
+    t.add_argument("--clearance-max-walk", type=int, default=0,
+                   help="sidewalk-lane samples a building may still block after the clearance cut (default 0)")
     t.add_argument("--bake", action="store_true", help="bake the level (needs the CARLA 1.0 editor)")
     t.add_argument("--carla-root", help="CARLA ue58-dev source tree, built with the editor")
     t.add_argument("--engine", help="its UE 5.8 engine root (holds Engine/Binaries)")
