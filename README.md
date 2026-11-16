@@ -136,6 +136,19 @@ with gabled, hipped, pyramidal or skillion roofs where the source gives a roof s
 eaves); small homes without one get a pitched roof by the region's habit. Facade styles follow the region:
 Dutch and north European brick, southern sandstone (before 1940) and warm render, US pre-war stone, Japanese render.
 
+**Dutch facades by era and street.** In the Netherlands the BAG construction year picks the era's facade
+(`twinmodel/export/facades.py`): pre-war orange-red or dark brown-grey brick with string courses (also for pre-war
+shops, cafes and offices), wederopbouw 1940-64 (buff brick, wide white steel windows, concrete floor edges), 1965-79
+dark brown brick or, for most flats of four storeys and more, concrete panels, 1980-94 red-brown brick, from 1995
+light, anthracite, red or grey brick with tall windows or render; offices 1985-99 below 25 m in brick with ribbon
+windows. `real_buildings.py` asks OSM (Overpass, cached in `<build>/osm_street/`, `--no-street-osm` to skip) for the
+ground-floor shops, cafes, restaurants and banks at the facades (`twinmodel/ingest/street_osm.py`): a building gets a
+shopfront ground floor when it has a shop unit or a mapped shop or cafe at its walls, and only on the walls nearest
+them; assembly units alone (lecture halls) no longer make shopfronts. A mapped `building:material` picks the wall
+and `building:colour` the nearest colour. Eindhoven centre: 605 of 707 OSM shops and cafes matched, shopfront walls
+4,030 -> 1,113 (the shop streets instead of every street wall of a shop building), 423 shop buildings (was 474);
+TU/e campus: 7 shop buildings (was 17: lecture halls and the auditorium). Roofs keep the aerial photo.
+
 **Left-hand traffic.** The lane graph is right-hand by construction, so in a left-hand country (`jp_urban`, or any
 profile in a country of `regions.LEFT_HAND`) it is built in the mirror image of the place (OSM mirrored about the
 frame's central meridian, which the transverse Mercator frame keeps exact, with left and right swapped in side and

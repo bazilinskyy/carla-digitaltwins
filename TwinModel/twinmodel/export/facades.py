@@ -299,11 +299,16 @@ def _classify(b: BuildingInfo) -> tuple[str, bool]:
         use in SHOP_USES if b.shop_pois is None else (use in RETAIL_USES or (use in SHOP_USES and b.shop_pois > 0)))
     if one_storey_shop:
         return "shopfront", False   # a one-storey shop: shopfront all the way up
+    if b.region == "nl" and 0 < year < 1940 and b.height_m < 30.0:
+        # before 1940 shops, cafes, offices and halls were brick buildings too (Eindhoven's Demer and
+        # Vestdijk: 1900-1924 cafes and offices had the concrete office look before 2026-11-16)
+        return "brick_old", shop_floor
     if use in OFFICE_USES or (use is None and cat in OSM_OFFICE) or \
             (use in SHOP_USES and b.height_m >= 12.0) or \
             (use in SHOP_USES and use not in RETAIL_USES and b.shop_pois == 0):   # a hall, an auditorium
         if year >= 1985 or (year == 0 and b.height_m >= 25.0):
-            if b.region == "nl" and year < 2000 and b.height_m < 25.0 and use in ("kantoorfunctie", "office"):
+            if b.region == "nl" and year < 2000 and b.height_m < 25.0 and \
+                    use in ("kantoorfunctie", "logiesfunctie", "office", "hotel"):
                 return "office_brick", shop_floor     # Dutch offices of the late 1980s and 1990s
             return "office_glass", shop_floor
         return "office_concrete", shop_floor

@@ -24,6 +24,10 @@ def _info(**kw):
      "brick_postwar", True),                                                         # outside nl: as before
     (dict(year=1992, uses={"kantoorfunctie": 2000}, height_m=15.0), "office_brick", False),
     (dict(year=1992, uses={"onderwijsfunctie": 2000}, height_m=15.0), "office_glass", False),
+    (dict(year=1992, uses={"logiesfunctie": 2000}, height_m=11.0), "office_brick", False),
+    # before 1940: brick whatever the use (a 1900 cafe on the Demer, a 1910 office)
+    (dict(year=1900, uses={"bijeenkomstfunctie": 900}, height_m=14.2), "brick_old", True),
+    (dict(year=1910, uses={"kantoorfunctie": 900, "woonfunctie": 100}, height_m=9.9), "brick_old", False),
     (dict(year=1970, uses={"kantoorfunctie": 2000}, height_m=20.0), "office_concrete", False),
     (dict(year=2005, uses={"kantoorfunctie": 2000}, height_m=40.0), "office_glass", False),
     (dict(year=1990, uses={"industriefunctie": 900}), "industrial", False),
