@@ -149,6 +149,19 @@ and `building:colour` the nearest colour. Eindhoven centre: 605 of 707 OSM shops
 4,030 -> 1,113 (the shop streets instead of every street wall of a shop building), 423 shop buildings (was 474);
 TU/e campus: 7 shop buildings (was 17: lecture halls and the auditorium). Roofs keep the aerial photo.
 
+**Window geometry and interiors** (`--window-geometry`, `--interiors`; `twinmodel/export/windows.py`,
+`ue/bake_windows.py`): the windows the facade textures paint become geometry on the same grid (`wall_uv`'s bays and
+storeys, each style's window fractions, the shopfront door bay): rectangular holes cut in the walls, the walls drawn
+without painted windows (`facadenw_*` textures), and one window module per style (reveal at the style's depth:
+22 cm pre-war brick, 10-16 cm later; frame with mullions and transom; sill; glass) placed as instanced Nanite meshes
+(one hierarchical instanced component per part and material on a host actor per tile, complex-as-simple collision
+so lidar hits the glass). Provenance: windows `inferred` (style rules), interiors `generated`. With `--interiors`
+the glass shows a room by the building's use on CARLA's fake-interior materials (`M_FakeInterior`: home, office,
+shop); each glass instance carries custom data (night rank, warm/cool, brightness) for night lighting. `--dry-run`
+counts without writing: TU/e campus 26,127 windows (64,067 module part instances placed), Eindhoven
+centre 76,674 windows (239,325 instances). Without the flags nothing changes. The bake leaves them out with
+`--no-windows`.
+
 **Left-hand traffic.** The lane graph is right-hand by construction, so in a left-hand country (`jp_urban`, or any
 profile in a country of `regions.LEFT_HAND`) it is built in the mirror image of the place (OSM mirrored about the
 frame's central meridian, which the transverse Mercator frame keeps exact, with left and right swapped in side and

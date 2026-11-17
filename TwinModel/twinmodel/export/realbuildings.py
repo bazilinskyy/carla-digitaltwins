@@ -404,20 +404,34 @@ def atlas_uv(uv: np.ndarray, rect, atlas_px: int = ATLAS_PX) -> np.ndarray:
 def apply(build: Path, man: dict, buildings: list, source: Source, *, looks: bool = True,
           ortho=None, ortho_label: str = "", texture_px: Optional[int] = None, roof_px: int = 1024,
           procedural_min_height: Optional[float] = None, window_lights: bool = True,
-          street: Optional[dict] = None) -> dict:
+          street: Optional[dict] = None, window_geometry: bool = False, interiors: bool = False,
+          dry_run: bool = False) -> dict:
     """Mesh, style and texture ``buildings`` and swap them into the bake export ``build``/ue (its
     manifest ``man`` is updated in place and written). Returns the manifest's stats.
 
     ``street`` (twinmodel.ingest.street_osm.to_model, None: unknown) adds what OSM maps at the street side:
     ground-floor shops and cafes within SHOP_POI_M of a building's walls give it a shopfront ground floor on
     the walls near them (without it the BAG units' uses decide, on every street wall), and a mapped
-    building:material / building:colour picks the wall and its colour."""
+    building:material / building:colour picks the wall and its colour.
+
+    ``window_geometry``: the windows the textures would paint become geometry (export/windows.py): holes cut in
+    the walls, the walls drawn without painted windows, one instanced module per style (reveal, frame, sill,
+    glass) listed in the manifest (``window_modules``, ``window_instances``; provenance "inferred").
+    ``interiors``: the glass shows a room picked by the building use (provenance "generated"), else dark glass.
+    ``dry_run``: count the windows and interiors per kind and return those stats; nothing is written."""
     import shapely
     from shapely.geometry import Polygon
     from shapely.strtree import STRtree
 
     from twinmodel.export import facades
+    from twinmodel.export import windows as winmod
     from twinmodel.export.ue import _tile_index, write_glb
+    if dry_run:
+        window_geometry = True
+    # window geometry: tile -> (mesh key, material key) -> [(transform, custom data)]
+    win_inst = defaultdict(lambda: defaultdict(list))
+    win_meshes = {}          # mesh key -> (style, door, part)
+    win_stats = defaultdict(int)
 
     texture_px = texture_px or facades.TEX_PX
     procedural_min_height = facades.PROCEDURAL_MIN_HEIGHT_M if procedural_min_height is None \
@@ -553,22 +567,90 @@ def apply(build: Path, man: dict, buildings: list, source: Source, *, looks: boo
                 continue
             ring0 = rings[0]
             off = facades.light_offset(b.id, n_wall)   # each wall shows another part of the night mask
+            wall_no = n_wall
             n_wall += 1
-            if i["shop"] and shop_wall(ring0, i["shop_xy"]):
+            is_shop_wall = bool(i["shop"] and shop_wall(ring0, i["shop_xy"]))
+            wkey, wshop_key = key, shop_key
+            if window_geometry:
+                shop_var = facades.variant_of("shopfront", b.id)
+                # the storey grid of wall_uv: storeys from ground + low_h; a wall below that (the non-shop walls of
+                # a shop building) repeats the grid downwards, whole storeys
+                z_lo = ground + low_h
+                if not is_shop_wall and low_h > 0:
+                    z_lo -= storey_h * math.floor(low_h / storey_h + 1e-6)
+                ops_up = winmod.layout(ring0, normal, z_lo, ground + b.height, storey_h, st, var, poly_rings=rings)
+                if is_shop_wall:
+                    # the upper storeys' grid starts at the shop floor's top only when the building has a shop
+                    # floor (low_h); a wall of a shop building always gets it
+                    ops_shop = winmod.layout(ring0, normal, ground, ground + facades.SHOP_FLOOR_M,
+                                             shop_st.storey_m, shop_st, shop_var, poly_rings=rings)
+                else:
+                    ops_shop = []
+                ops = ops_up + ops_shop
+                if ops:
+                    cut = winmod.cut_openings(rings, normal, ops)
+                    pieces = [triangulate(c) for c in cut]
+                    pieces = [pc for pc in pieces if pc is not None]
+                    if pieces:
+                        vs, ts, base = [], [], 0
+                        for pv, pt, _ in pieces:
+                            vs.append(pv)
+                            ts.append(pt + base)
+                            base += len(pv)
+                        v, tri = np.vstack(vs), np.vstack(ts)
+                    if ops_up:
+                        wkey = facades.material_key(st.name, var, windows=False)
+                    if ops_shop:
+                        wshop_key = facades.material_key("shopfront", shop_var, windows=False)
+                    use = facades.USE_OF_STYLE.get(st.name, "home")
+                    for o in ops:
+                        ost = facades.STYLES[o.style]
+                        tf = winmod.instance_transform(o, normal, ring0, ost)
+                        mk = winmod.module_key(o.style, o.door)
+                        o_use = "shop" if o.style == "shopfront" else use
+                        room = winmod.interior_of(o.style) if o.style != "shopfront" else "shop"
+                        glass = ("interior_" + room) if (interiors and room) else "glass_" + o.style
+                        wall_mat = facades.material_key(o.style, shop_var if o.style == "shopfront" else var,
+                                                        windows=False)
+                        for part, mat in (("reveal", wall_mat), ("frame", "frame_" + o.style),
+                                          ("sill", "sill"), ("glass", glass)):
+                            if part == "sill" and (o.door or not ost.sill):
+                                continue
+                            if part == "reveal" and winmod.REVEAL_M.get(o.style, 0.12) <= winmod.FRAME_DEPTH_M:
+                                continue
+                            mesh = f"{mk}_{part}"
+                            win_meshes[mesh] = (o.style, o.door, part)
+                            win_inst[tile][(mesh, mat)].append(
+                                (tf, winmod.night_data(b.id, wall_no, o) if part == "glass" else None))
+                        win_stats["windows"] += 1
+                        win_stats["doors"] += int(o.door)
+                        win_stats["shop_windows"] += int(o.style == "shopfront")
+                        win_stats["interiors_" + (room or "none")] += int(bool(interiors and room))
+                        win_stats["use_" + o_use] += 1
+                    win_stats["walls_with_windows"] += 1
+            if is_shop_wall:
                 n_shop_walls += 1
                 (vb, tb_), (va, ta) = facades.clip_triangles(v, tri, ground + facades.SHOP_FLOOR_M)
                 if len(tb_):
-                    add_wall(shop_key, vb, tb_, lambda vv: facades.wall_uv(
+                    add_wall(wshop_key, vb, tb_, lambda vv: facades.wall_uv(
                         vv, normal, ground, shop_st.storey_m, shop_st.bay_m, ring=ring0, tile_offset=off))
                 v, tri = va, ta
                 if not len(tri):
                     continue
-            add_wall(key, v, tri, lambda vv: facades.wall_uv(vv, normal, ground, storey_h, st.bay_m,
-                                                             ring=ring0, z0=low_h, tile_offset=off))
+            add_wall(wkey, v, tri, lambda vv: facades.wall_uv(vv, normal, ground, storey_h, st.bay_m,
+                                                              ring=ring0, z0=low_h, tile_offset=off))
         if used:
             n_parts += b.parts
             n_buildings += 1
             n_plain_roof += int(looks and ortho is not None and not photo_roof)
+
+    if dry_run:
+        stats = {"buildings": n_buildings, "window_tiles": len(win_inst),
+                 "window_meshes": len(win_meshes),
+                 "window_instances": sum(len(t) for groups in win_inst.values() for t in groups.values()),
+                 **dict(sorted(win_stats.items()))}
+        print("windows (dry run): " + json.dumps(stats))
+        return stats
 
     # ---- the source's photo textures: one atlas per tile
     atlases = {}
@@ -590,9 +672,9 @@ def apply(build: Path, man: dict, buildings: list, source: Source, *, looks: boo
     n_lights = 0
     if looks:
         tex_dir.mkdir(exist_ok=True)
-        for key in sorted(k for k in used_keys if k.startswith("facade_")):
-            sname, var = key[len("facade_"):].rsplit("_", 1)
-            alb, nrm_, orm = facades.synth_facade(facades.STYLES[sname], int(var), px=texture_px)
+        for key in sorted(k for k in used_keys if k.startswith(("facade_", "facadenw_"))):
+            sname, var, painted = facades.parse_material_key(key)
+            alb, nrm_, orm = facades.synth_facade(facades.STYLES[sname], int(var), px=texture_px, windows=painted)
             entry = {}
             for suffix, arr in (("d", alb), ("n", nrm_), ("orm", orm)):
                 rel = f"textures/T_{name}_{key}_{suffix}.png"
@@ -601,7 +683,7 @@ def apply(build: Path, man: dict, buildings: list, source: Source, *, looks: boo
             st = facades.STYLES[sname]
             entry.update(style=sname, variant=int(var), bay_m=st.bay_m, storey_m=st.storey_m)
             # lit windows at night (bake_level.py puts a style with a mask on the night parent)
-            lights = facades.synth_window_lights(st, int(var)) if window_lights else None
+            lights = facades.synth_window_lights(st, int(var)) if (window_lights and painted) else None
             if lights is not None:
                 rel = f"textures/T_{name}_{key}_w.png"
                 facades.save_png(out / rel, lights)
@@ -629,6 +711,65 @@ def apply(build: Path, man: dict, buildings: list, source: Source, *, looks: boo
                 facades.save_png(out / rel, img)
                 textures[key] = {"base_color": rel, "normal": f"textures/T_{name}_flat_n.png",
                                  "orm": f"textures/T_{name}_roof_orm.png", "source": ortho_label}
+
+    # ---- window modules (export/windows.py): one glb per module part, solid-colour materials, the instances
+    window_modules, window_instances = {}, []
+    if window_geometry and win_meshes:
+        wdir = out / "meshes" / "windows"
+        wdir.mkdir(parents=True, exist_ok=True)
+        tex_dir.mkdir(exist_ok=True)
+        facades.save_png(out / f"textures/T_{name}_flat_n.png", facades.flat_normal())
+
+        def solid(mkey, rgb, rough):
+            if mkey in textures:
+                return
+            rel = f"textures/T_{name}_{mkey}_d.png"
+            facades.save_png(out / rel, np.full((4, 4, 3), rgb, dtype=np.uint8))
+            orel = f"textures/T_{name}_{mkey}_orm.png"
+            facades.save_png(out / orel, facades.constant_orm(rough))
+            textures[mkey] = {"base_color": rel, "normal": f"textures/T_{name}_flat_n.png", "orm": orel,
+                              "provenance": winmod.PROVENANCE_WINDOWS}
+        parts_cache = {}
+        for mesh, (sname, door, part) in sorted(win_meshes.items()):
+            sty = facades.STYLES[sname]
+            if (sname, door) not in parts_cache:
+                parts_cache[(sname, door)] = winmod.module_parts(sty, door)
+            geom = parts_cache[(sname, door)].get(part)
+            if geom is None:
+                continue
+            pv, pn, puv, pf = geom
+            if part == "reveal":   # the wall's texture at its own scale (one tile = TEX_BAYS x TEX_STOREYS)
+                puv = puv / np.array([facades.TEX_BAYS * sty.bay_m, facades.TEX_STOREYS * sty.storey_m])
+            asset = f"{name}_W_{mesh}".replace("-", "m")
+            bbox = write_glb(wdir / f"{asset}.glb", asset, pv, pn, puv, pf, part)
+            window_modules[mesh] = {"file": f"meshes/windows/{asset}.glb", "asset": asset, "style": sname,
+                                    "door": bool(door), "part": part, "triangles": int(len(pf)),
+                                    "bbox_ue": bbox, "semantic": "Building",
+                                    "provenance": winmod.PROVENANCE_WINDOWS}
+            if part == "frame":
+                solid("frame_" + sname, sty.frame, 0.5)
+            elif part == "sill":
+                solid("sill", (200, 198, 190), 0.8)
+            elif part == "glass":
+                solid("glass_" + sname, sty.glass, 0.06)
+        rooms = set()
+        for (tx, ty), groups in sorted(win_inst.items()):
+            for (mesh, mat), rows in sorted(groups.items()):
+                if mesh not in window_modules:
+                    continue
+                if mat.startswith("interior_"):
+                    rooms.add(mat[len("interior_"):])
+                entry = {"tile": [tx, ty], "mesh": mesh, "material": mat,
+                         "provenance": winmod.PROVENANCE_INTERIORS if mat.startswith("interior_")
+                         else winmod.PROVENANCE_WINDOWS,
+                         "transforms": [list(t) for t, _ in rows]}
+                if any(c is not None for _, c in rows):
+                    entry["custom"] = [list(c) for _, c in rows]
+                window_instances.append(entry)
+        for room in sorted(rooms):
+            # bake_level.py puts these on CARLA's fake-interior materials (twin_materials.INTERIOR_PARENT)
+            textures.setdefault("interior_" + room, {"interior": room,
+                                                    "provenance": winmod.PROVENANCE_INTERIORS})
 
     # ---- glb files and the manifest
     mesh_dir = out / "meshes"
@@ -673,6 +814,15 @@ def apply(build: Path, man: dict, buildings: list, source: Source, *, looks: boo
                 a["texture"] = key
             assets.append(a)
     man["assets"] = assets
+    if window_modules:
+        man["window_modules"] = window_modules
+        man["window_instances"] = window_instances
+        man["stats"]["windows"] = dict(sorted(win_stats.items()))
+        man["stats"]["window_instances"] = sum(len(e["transforms"]) for e in window_instances)
+        man["stats"]["interiors"] = bool(interiors)
+    else:
+        man.pop("window_modules", None)
+        man.pop("window_instances", None)
     if textures:
         man["textures"] = textures
     else:

@@ -55,6 +55,14 @@ def main(argv=None, default_source="auto"):
     ap.add_argument("--procedural-min-height", type=float, default=facades.PROCEDURAL_MIN_HEIGHT_M,
                     help="buildings at least this high to the eaves (m) may take bake_level.py's "
                          "--buildings procedural facades: their walls below the eaves are written apart")
+    ap.add_argument("--window-geometry", action="store_true",
+                    help="windows as geometry (export/windows.py): holes in the walls, instanced Nanite modules "
+                         "(reveal, frame, sill, glass), walls drawn without painted windows; provenance inferred")
+    ap.add_argument("--interiors", action="store_true",
+                    help="with --window-geometry: rooms behind the glass by building use (CARLA's fake-interior "
+                         "materials; provenance generated); without it the glass is dark")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="count the windows and interiors --window-geometry would make; write nothing")
     args = ap.parse_args(argv)
     build = Path(args.build_dir)
     man = json.loads((build / "ue" / "manifest.json").read_text())
@@ -124,7 +132,9 @@ def main(argv=None, default_source="auto"):
     realbuildings.apply(build, man, blds, source, looks=looks, ortho=ortho,
                         ortho_label=realbuildings.ortho_credit(build), texture_px=args.texture_px,
                         roof_px=args.roof_px, procedural_min_height=args.procedural_min_height,
-                        window_lights=not args.no_window_lights, street=street)
+                        window_lights=not args.no_window_lights, street=street,
+                        window_geometry=args.window_geometry or args.dry_run, interiors=args.interiors,
+                        dry_run=args.dry_run)
     return 0
 
 

@@ -135,8 +135,17 @@ def _crc(*parts) -> int:
     return zlib.crc32("|".join(str(p) for p in parts).encode("utf-8"))
 
 
-def material_key(style: str, variant: int) -> str:
-    return "facade_%s_%d" % (style, variant)
+def material_key(style: str, variant: int, windows: bool = True) -> str:
+    """Material (and texture) key of a style's facade; ``windows=False``: the same wall without painted windows
+    ("facadenw_..."), for walls whose windows are geometry."""
+    return ("facade_%s_%d" if windows else "facadenw_%s_%d") % (style, variant)
+
+
+def parse_material_key(key: str) -> tuple[str, int, bool]:
+    """(style, variant, windows painted) of a facade material key."""
+    windows = key.startswith("facade_")
+    sname, var = key.split("_", 1)[1].rsplit("_", 1)
+    return sname, int(var), windows
 
 
 def variant_of(style: str, building_id: str, colour: Optional[tuple] = None) -> int:
@@ -493,9 +502,10 @@ def _brick_layer(h, w, mw, mh, style: Style, colour, rng):
     return col, height
 
 
-def synth_facade(style: Style, variant: int = 0, px: int = TEX_PX, seed: int = 0):
+def synth_facade(style: Style, variant: int = 0, px: int = TEX_PX, seed: int = 0, windows: bool = True):
     """(base colour uint8 HxWx3, normal uint8 HxWx3, ORM uint8 HxWx4) for one tile of a style:
-    TEX_BAYS x TEX_STOREYS modules, seamless in both directions, row 0 = top."""
+    TEX_BAYS x TEX_STOREYS modules, seamless in both directions, row 0 = top. ``windows=False``: the wall
+    without its painted windows (floor bands stay), for walls whose windows are geometry (export/windows.py)."""
     rng = np.random.default_rng(_crc(style.name, variant, seed))
     h = w = px
     mw, mh = TEX_BAYS * style.bay_m, TEX_STOREYS * style.storey_m
@@ -531,7 +541,7 @@ def synth_facade(style: Style, variant: int = 0, px: int = TEX_PX, seed: int = 0
             col[floor - bpx:floor] = np.asarray(style.band, float) * rng.uniform(0.96, 1.04)
             height[floor - bpx:floor] = 0.25
             rough[floor - bpx:floor] = 0.85
-    if not style.blank:
+    if not style.blank and windows:
         bw, sh = w / TEX_BAYS, h / TEX_STOREYS
         fpx = _frame_px(style, bw)
         for sy in range(TEX_STOREYS):

@@ -1653,6 +1653,8 @@ def main(argv):
     ap.add_argument("--map-root", default=MAP_ROOT)
     ap.add_argument("--mesh-root", default=MESH_ROOT, help="format with {semantic} and {name}")
     ap.add_argument("--no-nanite", action="store_true")
+    ap.add_argument("--no-windows", action="store_true",
+                    help="leave out the manifest's window geometry and interiors (bake_windows.py)")
     ap.add_argument("--skip-import", action="store_true", help="reuse already imported meshes")
     ap.add_argument("--report", default=None)
     ap.add_argument("--no-navmesh", action="store_true",
@@ -1700,6 +1702,11 @@ def main(argv):
 
     keys = {asset_key(a) for a in manifest["assets"]}
     tex_keys = {k for k in keys if k in manifest.get("textures", {})}
+    win_rooms = set()
+    if manifest.get("window_instances") and not args.no_windows:
+        import bake_windows
+        win_keys, win_rooms = bake_windows.material_keys(manifest)
+        tex_keys |= win_keys
     mats = make_material_instances(name, keys - tex_keys, mat_dir)
     textured = make_textured_instances(name, manifest, tex_keys, mat_dir, "%s/Textures" % map_dir,
                                        None if args.no_window_lights else args.window_hour)
@@ -1707,6 +1714,8 @@ def main(argv):
         mats.setdefault("building", make_material_instances(name, {"building"}, mat_dir).get("building", []))
         mats[k] = mats["building"]
     mats.update(textured)
+    if win_rooms:
+        mats.update(bake_windows.make_interiors(name, win_rooms, mat_dir))
     report["materials"] = {k: [m.get_path_name() for m in v] for k, v in mats.items()}
     report["textured_materials"] = len(textured)
     report["window_lights"] = {"hour": None if args.no_window_lights else args.window_hour,
@@ -1737,6 +1746,10 @@ def main(argv):
     placed, n_sp = place(world, manifest, mesh_paths, name)
     report["actors_placed"] = len(placed)
     report["spawn_points_placed"] = n_sp
+    if manifest.get("window_instances") and not args.no_windows:
+        report["windows"] = bake_windows.place_windows(
+            world, manifest, name, mats, spawn, args.mesh_root.format(semantic="Building", name=name) + "/Windows",
+            finish_mesh, interchange_options, nanite=not args.no_nanite)
     if args.buildings == "procedural":
         roof_mat = load_asset(args.roof_material) if args.roof_material else None
         report["procedural_buildings"] = place_buildings(world, manifest, name, mats, roof_mat)
