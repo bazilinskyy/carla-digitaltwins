@@ -121,7 +121,8 @@ def _add_hism(actor, sds):
                                           new_class=unreal.HierarchicalInstancedStaticMeshComponent,
                                           blueprint_context=None)
     handle, fail = sds.add_new_subobject(params)
-    if not handle or (fail and str(fail)):
+    lib = unreal.SubobjectDataBlueprintFunctionLibrary
+    if not lib.is_handle_valid(handle):
         raise RuntimeError("add_new_subobject failed: %s" % fail)
     data = unreal.SubobjectDataBlueprintFunctionLibrary.get_data(handle)
     return unreal.SubobjectDataBlueprintFunctionLibrary.get_object(data)
@@ -173,7 +174,10 @@ def place_windows(world, manifest, name, mats, spawn, mesh_dest, finish_mesh, in
                                         unreal.Vector(sx, 1.0, sz)))
         comp.add_instances(tfs, False, True)
         if e.get("custom"):
-            comp.set_editor_property("num_custom_data_floats", CUSTOM_FLOATS)
+            try:
+                comp.set_num_custom_data_floats(CUSTOM_FLOATS)
+            except Exception:  # noqa: BLE001 - older API: the property
+                comp.set_editor_property("num_custom_data_floats", CUSTOM_FLOATS)
             for i, row in enumerate(e["custom"]):
                 for j, v in enumerate(row[:CUSTOM_FLOATS]):
                     comp.set_custom_data_value(i, j, float(v), False)
