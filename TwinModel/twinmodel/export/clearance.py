@@ -1174,6 +1174,12 @@ def apply(build: Path, man: Optional[dict] = None, *, lanes: Optional[Lanes] = N
     log(f"clearance: {len(blds)} buildings, {len(regions)} cut cells; passages {stats['passage']}, "
         f"trims {stats['trim']} buildings")
     tree = STRtree([r.poly for r in regions]) if regions else None
+    if man.get("window_instances") and regions:
+        # window geometry (export/windows.py): no window may stay on a wall part the cut takes away
+        from twinmodel.export import windows as winmod
+        wd = winmod.drop_cut(man, [(r.poly, r.floor, r.clear) for r in regions])
+        stats.update(wd)
+        log(f"clearance: {wd['windows_dropped']} windows on cut walls removed ({wd['instances_dropped']} instances)")
     uncut, removed_m2, n_changed = [], 0.0, 0
     removed_by = {}
     new_assets = []

@@ -213,3 +213,35 @@ def test_apply_window_geometry_and_interiors(tmp_path):
     assert any(a["material"].startswith("facadenw_") for a in man["assets"])
     assert man["stats"]["window_instances"] == sum(len(e["transforms"]) for e in inst)
     assert man["stats"]["interiors"] is True
+
+
+def test_clearance_cut_drops_windows_on_removed_walls():
+    """A passage cut through the left half of a wall's two lower storeys takes those windows away, whole."""
+    from shapely.geometry import box
+    st = fc.STYLES["brick_postwar"]
+    ring, n = _wall(0.0, 12.0, 0.0, 3 * st.storey_m)
+    ops = wm.layout(ring, n, 0.0, 3 * st.storey_m, st.storey_m, st)
+    tfs = [list(wm.instance_transform(o, n, ring, st)) for o in ops]
+    mk = wm.module_key(st.name, False)
+    man = {"window_modules": {f"{mk}_{p}": {"style": st.name, "door": False, "part": p} for p in ("frame", "glass")},
+           "window_instances": [
+               {"mesh": f"{mk}_frame", "material": "frame_x", "transforms": [list(t) for t in tfs]},
+               {"mesh": f"{mk}_glass", "material": "interior_home", "transforms": [list(t) for t in tfs],
+                "custom": [[i / 100, 0, 1] for i in range(len(tfs))]}],
+           "stats": {"window_instances": 2 * len(tfs)}}
+    # the passage: x 0-6 m, from 1 m inside the building out to 1 m in front of the wall (y -1..3), 0-4.5 m high
+    res = wm.drop_cut(man, [(box(0.0, -1.0, 6.0, 3.0), 0.0, 4.5)])
+    gone = [o for o in ops if o.u1 > 0 and o.u0 < 6.0 and o.z0 < 4.5]
+    assert res["windows_dropped"] == len(gone) > 0
+    assert res["instances_dropped"] == 2 * len(gone)
+    kept = man["window_instances"][1]
+    assert len(kept["transforms"]) == len(ops) - len(gone) == len(kept["custom"])
+    # the custom data stayed with its windows
+    idx = [tfs.index(t) for t in kept["transforms"]]
+    assert [c[0] for c in kept["custom"]] == [i / 100 for i in idx]
+    assert man["stats"]["window_instances"] == 2 * (len(ops) - len(gone))
+    assert man["stats"]["windows_cut_by_clearance"] == len(gone)
+    # a cut far away changes nothing
+    before = json.dumps(man["window_instances"])
+    assert wm.drop_cut(man, [(box(50, 50, 60, 60), 0.0, 4.5)])["windows_dropped"] == 0
+    assert json.dumps(man["window_instances"]) == before

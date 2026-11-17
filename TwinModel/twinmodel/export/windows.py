@@ -319,3 +319,68 @@ def night_data(building_id: str, wall: int, o: Opening) -> tuple[float, float, f
 
 def interior_of(style: str) -> Optional[str]:
     return INTERIOR_OF_USE.get(facades.USE_OF_STYLE.get(style, "home"))
+
+
+# --------------------------------------------------------------------------- the road clearance cut
+
+CUT_SIDE_M = 0.3     # an opening counts as cut when its line on the wall, widened this much to both sides, meets a cut
+
+
+def drop_cut(manifest: dict, regions: list) -> dict:
+    """Remove the window instances on wall parts the road clearance cut takes away (export/clearance.py: passages
+    under buildings, trimmed overhangs), so no window floats in a passage. ``regions``: [(polygon in model xy,
+    floor z, clear z)]. Every part of one window shares its transform, so a window goes as a whole. Edits
+    ``manifest["window_instances"]`` in place; returns {"windows_dropped": n, "instances_dropped": n}."""
+    from shapely.geometry import LineString
+    from shapely.strtree import STRtree
+
+    inst = manifest.get("window_instances") or []
+    mods = manifest.get("window_modules") or {}
+    out = {"windows_dropped": 0, "instances_dropped": 0}
+    if not inst or not regions:
+        return out
+    polys = [r[0] for r in regions]
+    tree = STRtree(polys)
+    cut_tf = {}      # transform tuple -> cut?
+
+    def is_cut(tf, mesh):
+        key = tuple(tf)
+        if key in cut_tf:
+            return cut_tf[key]
+        m = mods.get(mesh, {})
+        st = facades.STYLES.get(m.get("style", ""))
+        if st is None:
+            cut_tf[key] = False
+            return False
+        w_nom, h_nom = nominal_size(st, bool(m.get("door")))
+        x, y, z, yaw, sx, sz = tf
+        cx, cy, z0 = x / 100.0, -y / 100.0, z / 100.0
+        w, h = w_nom * sx, h_nom * sz
+        ax, ay = math.cos(math.radians(yaw)), -math.sin(math.radians(yaw))   # the wall's along axis, model frame
+        line = LineString([(cx - ax * w / 2, cy - ay * w / 2), (cx + ax * w / 2, cy + ay * w / 2)]).buffer(CUT_SIDE_M)
+        hit = False
+        for i in tree.query(line):
+            poly, floor, clear = regions[int(i)]
+            if z0 < clear and z0 + h > floor and poly.intersects(line):
+                hit = True
+                break
+        cut_tf[key] = hit
+        return hit
+    kept = []
+    for e in inst:
+        keep = [i for i, tf in enumerate(e["transforms"]) if not is_cut(tf, e["mesh"])]
+        out["instances_dropped"] += len(e["transforms"]) - len(keep)
+        if not keep:
+            continue
+        if len(keep) != len(e["transforms"]):
+            e["transforms"] = [e["transforms"][i] for i in keep]
+            if e.get("custom"):
+                e["custom"] = [e["custom"][i] for i in keep]
+        kept.append(e)
+    manifest["window_instances"] = kept
+    out["windows_dropped"] = sum(1 for v in cut_tf.values() if v)
+    st = manifest.setdefault("stats", {})
+    if "window_instances" in st:
+        st["window_instances"] = sum(len(e["transforms"]) for e in kept)
+    st["windows_cut_by_clearance"] = out["windows_dropped"]
+    return out
