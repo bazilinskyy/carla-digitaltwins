@@ -245,3 +245,16 @@ def test_clearance_cut_drops_windows_on_removed_walls():
     before = json.dumps(man["window_instances"])
     assert wm.drop_cut(man, [(box(50, 50, 60, 60), 0.0, 4.5)])["windows_dropped"] == 0
     assert json.dumps(man["window_instances"]) == before
+
+
+def test_night_ranks_light_the_lit_share():
+    """The interior night material lights a pane when its rank is below the use's lit share x NightFactor: the
+    ranks must be spread so that share s lights about s of the panes."""
+    st = fc.STYLES["brick_postwar"]
+    ring, n = _wall(0, 300, 0, 30)
+    ops = wm.layout(ring, n, 0, 30, st.storey_m, st)
+    ranks = np.array([wm.night_data("b", 0, o)[0] for o in ops])
+    for share in (0.1, 0.3, 0.6):
+        assert (ranks < share).mean() == pytest.approx(share, abs=0.06)
+    cool = np.array([wm.night_data("b", 0, o)[1] for o in ops])
+    assert cool.mean() == pytest.approx(fc.LIGHT_COOL_SHARE, abs=0.05)

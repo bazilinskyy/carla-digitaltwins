@@ -1715,7 +1715,8 @@ def main(argv):
         mats[k] = mats["building"]
     mats.update(textured)
     if win_rooms:
-        mats.update(bake_windows.make_interiors(name, win_rooms, mat_dir))
+        mats.update(bake_windows.make_interiors(name, win_rooms, mat_dir,
+                                                None if args.no_window_lights else args.window_hour))
     report["materials"] = {k: [m.get_path_name() for m in v] for k, v in mats.items()}
     report["textured_materials"] = len(textured)
     report["window_lights"] = {"hour": None if args.no_window_lights else args.window_hour,
