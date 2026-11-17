@@ -191,6 +191,49 @@ area outside the OpenDRIVE: Shibuya's stacked roads and plazas need a look. Thei
 server. Coupled CARLA's map maker ran the whole chain for a third place
 (`--twin`, Grote Markt in Leuven, 0.5 km, without the bake): the Flemish photo and 849 Overture buildings.
 
+#### Roads clear of buildings
+
+Open building models are solids down to the ground, so where a street really runs under a building (a bus
+terminal, a station hall, a viaduct) or a footprint overlaps the carriageway, the baked walls stand on the lanes
+and traffic drives through them. `tools/real_buildings.py` therefore ends with the clearance cut
+(`twinmodel/export/clearance.py`), and `twinmodel twin` checks it in its own step (`tools/road_clearance.py`):
+
+* the corridor is the export's drivable, parking and crossing meshes plus the OpenDRIVE's driving, parking and
+  bike lanes (read with CARLA's parser), and a band of 0.6 m either side of each sidewalk lane's centre line;
+* inside it, building geometry from 0.3 m below the road to 4.6 m above it (the street's OSM `maxheight` + 0.2 m
+  where tagged, at least 3 m; 2.5 m along the sidewalks) is removed and closed like a real passage: a ceiling at
+  the clearance and walls where the corridor runs through the footprint, in the building's own wall material
+  without windows (`plain_<style>_<variant>` textures); cut faces keep their texture coordinates, so PLATEAU photo
+  atlases and facade bays stay in place;
+* a footprint only grazing the carriageway (less than 1.8 m inside it, not split by it) and a building too low to
+  pass under are trimmed back to the kerb over their whole height; overlaps under 0.3 m (a facade on the kerb
+  line) are left alone; a cut around an elevated road keeps the structure under its deck;
+* the uncut meshes stay in `ue/meshes/uncut/` and every run starts from them; `<Name>.buildings.json` holds the
+  solid footprints minus the passages (CARLA x, y) for the simulation's own checks;
+* the check counts CARLA's 1 m driving-lane and sidewalk-lane samples with a building wall across the lane or a
+  building surface less than 4.0 m (2.2 m) above it, writes every one with lat/lon to `clearance.json` and
+  `twin.json`, and stops the twin before the bake when any is left (`--clearance-max-road/-walk`); samples under a
+  building roof without a wall are counted apart, for information.
+
+Blocked lane samples before and after (driving / sidewalk; wall crossings as the earlier stand-alone checker
+counted them):
+
+| Twin | Before | After | Passages / trims |
+| --- | --- | --- | --- |
+| ShibuyaCrossing (PLATEAU) | 541 / 589 | 0 / 0 | 475 / 49 |
+| EhvCentre (3DBAG) | 727 / 488 | 0 / 0 | 366 / 235 |
+| SalamancaPlaza (Catastro) | 149 / 192 | 0 / 2 | 162 / 62 |
+| TUeCampus (3DBAG) | 96 / 44 | 0 / 0 | 33 / 73 |
+| NycMidtown (NYC 3D) | 93 / 16 | 0 / 0 | 23 / 27 |
+| ZurichHB (Overture) | 67 / 67 | 0 / 0 | 90 / 53 |
+| HelsinkiSenate (Overture) | 22 / 63 | 0 / 1 | 46 / 23 |
+| AmsterdamDam (3DBAG) | 17 / 477 | 0 / 0 | 434 / 177 |
+
+All eight levels were rebaked with the cut on lin5080 (2026-11-16; bakes 2-5 min, peak 9-21 GB with the navigation
+builders), load in a CARLA 1.0 server (371-400 spawn points, 20 of 20 navigation queries answered) and ran a 60 s
+co-simulated trial each (RTF 0.74-0.95, no collisions). Two sidewalk samples in Salamanca and one in Helsinki are
+still blocked (a wall where a sidewalk lane leaves a trimmed building; at a steep stair).
+
 ### 3. Bake the Unreal level
 
 Run inside the CARLA editor as a commandlet.

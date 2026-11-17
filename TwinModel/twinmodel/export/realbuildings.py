@@ -433,6 +433,8 @@ def apply(build: Path, man: dict, buildings: list, source: Source, *, looks: boo
     win_meshes = {}          # mesh key -> (style, door, part)
     win_stats = defaultdict(int)
 
+    from twinmodel.export import clearance
+    clearance.restore(build / "ue", man)   # a road clearance cut is redone on the new meshes (clearance.apply)
     texture_px = texture_px or facades.TEX_PX
     procedural_min_height = facades.PROCEDURAL_MIN_HEIGHT_M if procedural_min_height is None \
         else procedural_min_height
