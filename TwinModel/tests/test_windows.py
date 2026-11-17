@@ -258,3 +258,25 @@ def test_night_ranks_light_the_lit_share():
         assert (ranks < share).mean() == pytest.approx(share, abs=0.06)
     cool = np.array([wm.night_data("b", 0, o)[1] for o in ops])
     assert cool.mean() == pytest.approx(fc.LIGHT_COOL_SHARE, abs=0.05)
+
+
+def test_windows_with_a_building_in_front_are_left_out():
+    """Two parts of one building (or neighbours whose footprints touch): the wall between them gets no windows up
+    to the lower part's roof, the tall part's wall above it does."""
+    from types import SimpleNamespace
+    from tests.test_realbuildings import _box
+    from twinmodel.export.realbuildings import triangulate
+    tall = SimpleNamespace(surfaces=_box(0, 0, 12, 10, 0, 18))       # 18 m part, y 0..10
+    low = SimpleNamespace(surfaces=_box(0, -8, 12, 0, 0, 7))         # 7 m part in front of its south wall
+    top = wm.roof_top([tall, low], triangulate)
+    assert top([[6.0, -4.0]])[0] == pytest.approx(7.0) and top([[6.0, 5.0]])[0] == pytest.approx(18.0)
+    st = fc.STYLES["brick_postwar"]
+    ring, n = _wall(0.0, 12.0, 0.0, 18.0)                            # the tall part's south wall, facing -y
+    ops = wm.layout(ring, n, 0.0, 18.0, st.storey_m, st)
+    seen = wm.visible(ops, n, ring, top)
+    for o, v in zip(ops, seen):
+        assert v == ((o.z0 + o.z1) / 2 > 7.0 - wm.HIDE_ABOVE_M), (o.storey, o.z0, o.z1)
+    assert 0 < seen.sum() < len(ops)
+    # nothing in front: all seen
+    alone = wm.roof_top([tall], triangulate)
+    assert wm.visible(ops, n, ring, alone).all()

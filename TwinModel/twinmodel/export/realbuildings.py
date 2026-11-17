@@ -486,6 +486,7 @@ def apply(build: Path, man: dict, buildings: list, source: Source, *, looks: boo
     used_keys = set()
     n_buildings = n_parts = n_tris = n_party = n_plain_roof = n_shop_walls = 0
     boundaries = [p.exterior if p is not None and not p.is_empty else None for p in polys]
+    top = winmod.roof_top(buildings, triangulate) if window_geometry else None
     for k, b in enumerate(buildings):
         i = info[k]
         allv = np.vstack([r for rings, _ in b.surfaces for r in rings]) if b.surfaces else None
@@ -589,6 +590,14 @@ def apply(build: Path, man: dict, buildings: list, source: Source, *, looks: boo
                 else:
                     ops_shop = []
                 ops = ops_up + ops_shop
+                if ops and top is not None:
+                    # a window with building in front of it (another part of the same building, a neighbour whose
+                    # footprint touches: Catastro parts, 3DBAG/Overture blocks) is never seen: no window there
+                    seen = winmod.visible(ops, normal, ring0, top)
+                    win_stats["windows_hidden"] += len(ops) - int(seen.sum())
+                    ops = [o for o, v in zip(ops, seen) if v]
+                    ops_up = [o for o in ops_up if o in set(ops)]
+                    ops_shop = [o for o in ops_shop if o in set(ops)]
                 if ops:
                     cut = winmod.cut_openings(rings, normal, ops)
                     pieces = [triangulate(c) for c in cut]

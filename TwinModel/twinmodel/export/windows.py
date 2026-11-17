@@ -321,6 +321,51 @@ def interior_of(style: str) -> Optional[str]:
     return INTERIOR_OF_USE.get(facades.USE_OF_STYLE.get(style, "home"))
 
 
+# --------------------------------------------------------------------------- hidden openings
+
+HIDE_OUT_M = 0.75     # look this far out of the wall (beyond roof overhangs) for building in front of a window
+HIDE_ABOVE_M = 0.2    # building whose top is this much above the opening's middle there hides it
+
+
+def roof_top(buildings, triangulate):
+    """clearance.TopZ over the non-vertical surfaces (roofs, floors, bases) of every building: the top of the
+    building volume above a point."""
+    from twinmodel.export.clearance import TopZ
+    tris = []
+    for b in buildings:
+        for rings, kind in b.surfaces:
+            if not rings or kind in ("WallSurface", "ClosureSurface"):
+                continue
+            res = triangulate(rings)
+            if res is None:
+                continue
+            v, t, n = res
+            if abs(n[2]) < 0.3:
+                continue
+            tris.append(v[t])
+    return TopZ(np.concatenate(tris) if tris else np.zeros((0, 3, 3)))
+
+
+def visible(ops: list, normal: np.ndarray, ring: np.ndarray, top) -> np.ndarray:
+    """Per opening: False when a building stands in front of it (the top of the building volume HIDE_OUT_M out of
+    the wall, at the opening's centre, is above the opening's middle): the walls between the parts of one building
+    and walls against a neighbour that party-wall detection missed."""
+    if not ops:
+        return np.zeros(0, dtype=bool)
+    along, up = wall_axes(normal)
+    n = np.asarray(normal, float)
+    nh = n[:2] / max(np.linalg.norm(n[:2]), 1e-9)
+    origin = np.asarray(ring, float)[0]
+    o_a = float(origin @ along)
+    xy, zmid = [], []
+    for o in ops:
+        c = origin + ((o.u0 + o.u1) / 2 - o_a) * along
+        xy.append(c[:2] + HIDE_OUT_M * nh)
+        zmid.append((o.z0 + o.z1) / 2)
+    tz = top(np.asarray(xy))
+    return ~(tz > np.asarray(zmid) + HIDE_ABOVE_M)
+
+
 # --------------------------------------------------------------------------- the road clearance cut
 
 CUT_SIDE_M = 0.3     # an opening counts as cut when its line on the wall, widened this much to both sides, meets a cut
