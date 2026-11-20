@@ -159,11 +159,25 @@ def test_select_profile_auto_uses_country_and_density(osm_fixture, monkeypatch, 
     monkeypatch.setattr(osm_mod, "country_for_bbox", lambda bbox: "ES", raising=False)  # 1-arg form
     p, meta = cli.select_profile("auto", osm, frame, BBOX, tmp_path)
     assert p.name == "eu_dense" and meta["iso2"] == "ES" and p.sources.ortho[0] == "icgc"   # Barcelona
+    assert p.signal_country == "ES"
     monkeypatch.setattr(osm_mod, "country_for_bbox", lambda bbox, cache_dir: 1 / 0, raising=False)
     p, meta = cli.select_profile("auto", osm, frame, BBOX, tmp_path)
     assert p.name == "eu_dense" and meta["iso2"] is None  # lookup failure -> unknown
     p, meta = cli.select_profile("us_suburban", osm, frame, BBOX, tmp_path)
     assert p is profiles.US_SUBURBAN and meta["source"] == "cli"
+
+
+def test_signal_country_is_the_place_not_the_profile(osm_fixture, monkeypatch, tmp_path):
+    """A Dutch twin runs on eu_dense (calibrated in Barcelona): its OpenDRIVE signals must say NL, not ES, so the
+    regional sign placement (ue/place_traffic_signs.py) and CARLA's landmarks see the right country."""
+    from twinmodel.ingest import osm as osm_mod
+    osm, frame = osm_fixture
+    monkeypatch.setattr(osm_mod, "country_for_bbox", lambda bbox, cache_dir: "nl", raising=False)
+    p, meta = cli.select_profile("auto", osm, frame, BBOX, tmp_path)
+    assert p.name == "eu_dense" and p.signal_country == "NL" and meta["iso2"] == "NL"
+    assert profiles.EU_DENSE.signal_country == "ES"             # the shared profile itself is untouched
+    with profiles.use(p):
+        assert profiles.get().signal_country == "NL"
 
 
 def test_call_with_sources_before_and_after_ingest_kwarg():

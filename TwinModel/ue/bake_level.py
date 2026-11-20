@@ -1470,16 +1470,29 @@ def content_dir_for(package_root):
     return os.path.join(base, *rest)
 
 
-def copy_xodr(manifest, name, map_root=MAP_ROOT):
+def copy_xodr(manifest, name, map_root=MAP_ROOT, server_signs="auto"):
+    """The level's OpenDRIVE (what the server loads). ``server_signs`` (server_signs.py): "auto" leaves out the sign
+    signals where the client draws the real signs (NL: NDW register), "none" always, "stock" never (CARLA's stock
+    US-style sign blueprints then stand at every speed-limit signal)."""
     src = manifest.get("xodr")
     if not src or not os.path.exists(src):
         warn("manifest has no xodr; the map will have no waypoints")
         return None
+    import server_signs as ss
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
     dst_dir = os.path.join(content_dir_for(map_root), name, "OpenDrive")
     os.makedirs(dst_dir, exist_ok=True)
     dst = os.path.join(dst_dir, name + ".xodr")
-    shutil.copyfile(src, dst)
-    log("xodr -> %s (%.1f MB)" % (dst, os.path.getsize(dst) / 1e6))
+    country = ss.xodr_country(src)
+    drop = ss.types_to_drop(server_signs, country)
+    if drop:
+        import xodr_drop_signals
+        dropped = xodr_drop_signals.drop_signals(src, dst, set(drop))
+        log("xodr -> %s (%.1f MB; country %s: %s sign signals left out for the client's own signs)" % (
+            dst, os.path.getsize(dst) / 1e6, country, dict(dropped)))
+    else:
+        shutil.copyfile(src, dst)
+        log("xodr -> %s (%.1f MB; country %s: signals kept)" % (dst, os.path.getsize(dst) / 1e6, country))
     return dst
 
 
@@ -1653,6 +1666,9 @@ def main(argv):
     ap.add_argument("--map-root", default=MAP_ROOT)
     ap.add_argument("--mesh-root", default=MESH_ROOT, help="format with {semantic} and {name}")
     ap.add_argument("--no-nanite", action="store_true")
+    ap.add_argument("--server-signs", default="auto", choices=["auto", "none", "stock"],
+                    help="sign signals in the level's OpenDRIVE (server_signs.py): auto = left out where the client "
+                         "draws the real signs (NL), none = always left out, stock = kept (CARLA's US-style signs)")
     ap.add_argument("--no-windows", action="store_true",
                     help="leave out the manifest's window geometry and interiors (bake_windows.py)")
     ap.add_argument("--skip-import", action="store_true", help="reuse already imported meshes")
@@ -1754,7 +1770,7 @@ def main(argv):
     if args.buildings == "procedural":
         roof_mat = load_asset(args.roof_material) if args.roof_material else None
         report["procedural_buildings"] = place_buildings(world, manifest, name, mats, roof_mat)
-    xodr = copy_xodr(manifest, name, args.map_root)
+    xodr = copy_xodr(manifest, name, args.map_root, args.server_signs)
     report["xodr"] = xodr
     report["attribution"] = copy_attribution(manifest, name, args.map_root)
     report["tm_cache"] = (None if args.no_tm_cache

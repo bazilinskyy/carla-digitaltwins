@@ -860,6 +860,8 @@ def select_profile(choice: str, osm, frame: LocalFrame, bbox: tuple[float, float
     p = p.with_(sources=profiles.DataSources(ortho=plan.ortho, dem=plan.dem))
     if plan.lefthand and p.drives_on != "left":   # e.g. the UK or Australia on eu_dense: left-hand lanes
         p = p.with_(drives_on="left")
+    if iso2:   # the OpenDRIVE signals carry the place's country, not the profile's calibration city (eu_dense: ES)
+        p = p.with_(signal_country=iso2)
     for note in plan.notes:
         log.warning("region: %s", note)
     return p, {"name": p.name, "source": "auto", "iso2": iso2, "building_coverage": coverage,
