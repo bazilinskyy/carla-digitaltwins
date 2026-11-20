@@ -1493,6 +1493,17 @@ def copy_xodr(manifest, name, map_root=MAP_ROOT, server_signs="auto"):
     else:
         shutil.copyfile(src, dst)
         log("xodr -> %s (%.1f MB; country %s: signals kept)" % (dst, os.path.getsize(dst) / 1e6, country))
+    # also where UOpenDrive::FindPathToXODRFile looks first and CARLA's DefaultGame.ini already stages loose files
+    # (Carla/Maps/OpenDrive): a packaged server finds the twin's OpenDRIVE without a per-twin staging line
+    if not map_root.startswith("/Game/"):       # a twin baked into a content pack: the pack manifest finds it
+        return dst
+    staged = content_dir_for("/Game/Carla/Maps/OpenDrive")
+    try:
+        os.makedirs(staged, exist_ok=True)
+        shutil.copyfile(dst, os.path.join(staged, name + ".xodr"))
+        log("xodr also -> %s" % os.path.join(staged, name + ".xodr"))
+    except OSError as exc:
+        warn("staged OpenDRIVE copy: %s" % exc)
     return dst
 
 
