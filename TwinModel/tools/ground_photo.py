@@ -286,15 +286,19 @@ def main(argv=None):
     ap.add_argument("--only", default=None, help="only these tiles, e.g. 0_0,-1_2 (probing; the manifest "
                     "is not written)")
     ap.add_argument("--preview", action="store_true", help="also write ground_photo/preview.jpg (all tiles, small)")
+    ap.add_argument("--verges", action="store_true",
+                    help="also verges and lawns (kind verge: CARLA's grass materials render grey-green from above; "
+                         "the photo has the real lawn colour)")
     args = ap.parse_args(argv)
+    kinds = KINDS + (("verge",) if args.verges else ())
 
     build = Path(args.build_dir)
     out = build / "ue"
     man = json.loads((out / "manifest.json").read_text())
     name, tile_m = man["name"], float(man["tile_m"])
-    tiles = ground_tiles(man)
+    tiles = ground_tiles(man, kinds)
     if args.undo:
-        apply(man, out, {}, tile_m)
+        apply(man, out, {}, tile_m, kinds + (("verge",) if "verge" not in kinds else ()))
         man["stats"].pop("ground_photo", None)
         (out / "manifest.json").write_text(json.dumps(man, indent=1))
         print("ground photo removed from %d tiles" % len(tiles))
@@ -371,7 +375,7 @@ def main(argv=None):
     if args.only:
         print("probe only: %s" % json.dumps(per_tile))
         return 0
-    n = apply(man, out, textured, tile_m)
+    n = apply(man, out, textured, tile_m, kinds)
     man["stats"]["ground_photo"] = {
         "tiles": len(textured), "px": px, "m_per_px": round(px_m, 4), "sources": dict(sources),
         "objects_filled_mean": round(float(np.mean([v["objects_filled"] for v in per_tile.values()] or [0])), 4),

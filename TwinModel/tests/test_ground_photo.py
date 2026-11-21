@@ -127,3 +127,13 @@ def test_in_nl():
     tool = _tool()
     assert tool.in_nl((51.436, 5.47, 51.45, 5.493))
     assert not tool.in_nl((41.38, 2.15, 41.40, 2.18))
+
+
+def test_ground_tiles_takes_verges_only_when_asked():
+    tool = _tool()
+    man = {"assets": [{"kind": "ground", "tile": [0, 0]}, {"kind": "verge", "tile": [0, 0]},
+                      {"kind": "sidewalk", "tile": [0, 0]}, {"kind": "groundplane", "tile": [1, 0]}]}
+    plain = tool.ground_tiles(man)
+    assert sorted(a["kind"] for a in plain[(0, 0)]) == ["ground"]
+    lawns = tool.ground_tiles(man, tool.KINDS + ("verge",))
+    assert sorted(a["kind"] for a in lawns[(0, 0)]) == ["ground", "verge"]
