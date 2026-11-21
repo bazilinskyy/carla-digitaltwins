@@ -348,8 +348,13 @@ def twin(args) -> int:
     text = regions.attribution_text(name, rep, man, extra=("nominatim",) if args.place else ())
     (out / "ATTRIBUTION.md").write_text(text, encoding="utf-8")
     (out / "ue" / "ATTRIBUTION.md").write_text(text, encoding="utf-8")
+    # the place record: travels with the level (bake_level.copy_place), read by tools/stage_sidecars.py for the
+    # level's country (the OpenDRIVE's own signal stamp was the street profile's on twins baked before 2026-11-20)
+    place = {k: summary.get(k) for k in ("name", "place", "bbox", "country")}
+    (out / "ue" / "place.json").write_text(json.dumps(place, indent=1, ensure_ascii=False))
     if man:
         man["attribution"] = "ATTRIBUTION.md"
+        man["place"] = "place.json"
         man_path.write_text(json.dumps(man, indent=1))
     say("done", "credits", f"{len(regions.used_sources(rep, man))} sources -> {out / 'ATTRIBUTION.md'}")
     # 7. bake
