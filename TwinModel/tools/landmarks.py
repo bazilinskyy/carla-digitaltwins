@@ -311,6 +311,8 @@ def curtain_wall(planes, base_z, bay, storey, fins_min_z, bid, meshes):
         meshes["glass"].add(p3, n, uv, tri)
         stats["panels_m2"] += poly.area
         s0, z0, s1, z1 = poly.bounds
+        if s1 - s0 < 1.5:     # a column facet or a sliver: glass only (bands and fins on it float in the air)
+            continue
         # mullions every bay: 7 cm wide, 18 cm deep
         k0 = math.ceil((s0 + 0.15) / bay)
         for k in range(k0, int(math.floor((s1 - 0.15) / bay)) + 1):
