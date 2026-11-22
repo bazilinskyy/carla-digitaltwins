@@ -61,7 +61,7 @@ TUE_CAMPUS = {
     # road 201 and pave the gap; walls over it start 4.6 m up (the clearance pass's road height).
     "dezaale_passage": {"type": "passage", "road": "277", "to": "201", "z": 16.2575,
                         "drop": {"layer": -1, "box": [-285.5, -278.5, -43.0, -26.0]},
-                        "fill": {"x": [-283.0, -259.5], "axis_y": -34.9, "drive_half": 3.5, "walk_m": 2.0,
+                        "fill": {"x": [-282.4, -259.6], "axis_y": -34.9, "drive_half": 3.5, "walk_m": 2.0,
                                  "kerb_m": 0.15},
                         "clearance_m": 4.6, "soffit_under": "NL.IMBAG.Pand.0772100001010279"},
     "atlas": {"type": "curtain_wall", "building": "NL.IMBAG.Pand.0772100001010279",
@@ -509,6 +509,30 @@ def _drop(ue: Path, man: dict, layer: int, bx) -> int:
     return n
 
 
+def _top_z(ue: Path, man: dict, x: float, y: float, kinds=("drivable", "crossing", "parking")):
+    """The highest road surface (layer 0) at (x, y) in the export, or None."""
+    best = None
+    tile = list(_tile_index(x, y, man["tile_m"]))
+    for a in man["assets"]:
+        if a["kind"] not in kinds or a["layer"] != 0 or list(a["tile"]) != tile:
+            continue
+        g = read_glb(ue / a["file"])
+        v = gltf_to_model(g["positions"].astype(float))
+        for tri in g["faces"]:
+            p = v[tri]
+            (x1, y1), (x2, y2), (x3, y3) = p[0, :2], p[1, :2], p[2, :2]
+            den = (y2 - y3) * (x1 - x3) + (x3 - x2) * (y1 - y3)
+            if abs(den) < 1e-12:
+                continue
+            l1 = ((y2 - y3) * (x - x3) + (x3 - x2) * (y - y3)) / den
+            l2 = ((y3 - y1) * (x - x3) + (x1 - x3) * (y - y3)) / den
+            l3 = 1 - l1 - l2
+            if min(l1, l2, l3) >= -1e-6:
+                zz = l1 * p[0, 2] + l2 * p[1, 2] + l3 * p[2, 2]
+                best = zz if best is None else max(best, zz)
+    return best
+
+
 def passage(ue: Path, man: dict, s: dict) -> dict:
     """Pave a passage at street level (drivable lanes, raised sidewalks with kerbs) after dropping the wrongly
     sunk layer. Returns the clearance area (polygon, z of the opening's top)."""
@@ -518,20 +542,26 @@ def passage(ue: Path, man: dict, s: dict) -> dict:
     up = np.array([0, 0, 1.0])
     cx, cy = (fx0 + fx1) / 2, yc
 
-    def quad(y0, y1, zz):
-        return [[fx0, y0, zz], [fx1, y0, zz], [fx1, y1, zz], [fx0, y1, zz]], [[0, 1, 2], [0, 2, 3]]
-    v, f = quad(yc - hd, yc + hd, z + 0.004)
+    # the street's own height where the fill meets it at both ends, so the joint has no step (a 2 cm step at the
+    # crossing shook the film camera)
+    z_w = _top_z(ue, man, fx0 - 0.6, yc) or z
+    z_e = _top_z(ue, man, fx1 + 0.6, yc) or z
+
+    def quad(y0, y1, dz):
+        return ([[fx0, y0, z_w + dz], [fx1, y0, z_e + dz], [fx1, y1, z_e + dz], [fx0, y1, z_w + dz]],
+                [[0, 1, 2], [0, 2, 3]])
+    v, f = quad(yc - hd, yc + hd, 0.002)
     _append(ue, man, "drivable", 0, cx, cy, v, f, np.tile(up, (4, 1)))
     vs, fs, ns = [], [], []
     for (y0, y1) in ((yc - hd - wk, yc - hd), (yc + hd, yc + hd + wk)):
-        q, qf = quad(y0, y1, z + kb)
+        q, qf = quad(y0, y1, kb)
         fs += [[i + len(vs) for i in tri] for tri in qf]
         vs += q
         ns += [up] * 4
     _append(ue, man, "sidewalk", 0, cx, cy, vs, fs, np.array(ns))
     rv, rf, rn = [], [], []
     for yk, sgn in ((yc - hd, 1.0), (yc + hd, -1.0)):    # kerb faces towards the road
-        q = [[fx0, yk, z], [fx1, yk, z], [fx1, yk, z + kb], [fx0, yk, z + kb]]
+        q = [[fx0, yk, z_w], [fx1, yk, z_e], [fx1, yk, z_e + kb], [fx0, yk, z_w + kb]]
         nrm = np.array([0, sgn, 0.0])
         tri = [[0, 1, 2], [0, 2, 3]] if sgn < 0 else [[0, 2, 1], [0, 3, 2]]
         rf += [[i + len(rv) for i in t3] for t3 in tri]
@@ -539,8 +569,9 @@ def passage(ue: Path, man: dict, s: dict) -> dict:
         rn += [nrm] * 4
     _append(ue, man, "riser", 0, cx, cy, rv, rf, np.array(rn))
     area = box(fx0 - 1.0, yc - hd - wk, fx1 + 1.0, yc + hd + wk)
-    return {"dropped_triangles": dropped, "area": area, "z_top": z + s["clearance_m"],
-            "report": {"dropped_triangles": dropped, "paved_m2": round(area.area, 1)}}
+    return {"dropped_triangles": dropped, "area": area, "z_top": max(z_w, z_e) + s["clearance_m"],
+            "report": {"dropped_triangles": dropped, "paved_m2": round(area.area, 1),
+                       "z_west": round(z_w, 3), "z_east": round(z_e, 3)}}
 
 
 def clip_planes(planes, clear: list):
