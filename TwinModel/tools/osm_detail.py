@@ -76,7 +76,7 @@ def project(man: dict):
 
 
 def parse(data: dict, to_xy) -> dict:
-    parts, entrances, steps, ways = [], [], [], []
+    parts, entrances, steps, ways, below = [], [], [], [], []
     for e in data["elements"]:
         t = e.get("tags", {})
         if e["type"] == "node" and "entrance" in t:
@@ -97,7 +97,9 @@ def parse(data: dict, to_xy) -> dict:
                     steps.append({"id": e["id"], "line": np.array(pts), "tags": t})
                 if not indoor:                      # corridors inside a building are not a way under it
                     ways.append(LineString(pts))
-    return {"parts": parts, "entrances": entrances, "steps": steps, "ways": ways}
+                if _num(t.get("level", "0").split(";")[0], 0) < 0 or t.get("location") == "underground":
+                    below.append(LineString(pts))
+    return {"parts": parts, "entrances": entrances, "steps": steps, "ways": ways, "below": below}
 
 
 # --------------------------------------------------------------------------- the ground
@@ -334,7 +336,8 @@ def flights(osm, ground, entrances, meshes, extra=(), log=print):
             top_b = (ground.z(*b, 0) or 0) >= (ground.z(*a, 0) or 0)
         # steps down to a basement entrance (level -1, bicycle cellars) cannot be dug into the ground plate: left out
         near = [e for e in entrances if min(np.hypot(*(e["xy"] - a)), np.hypot(*(e["xy"] - b))) < 6.0]
-        if any(_num(e["tags"].get("level"), 0) < 0 for e in near) or _num(t.get("level"), 0) < 0:
+        if any(_num(e["tags"].get("level"), 0) < 0 for e in near) or _num(t.get("level"), 0) < 0 or \
+                any(min(w.distance(Point(a)), w.distance(Point(b))) < 2.5 for w in osm.get("below", ())):
             continue
         lo, hi = (a, b) if top_b else (b, a)
         fwd = (hi - lo) / max(np.hypot(*(hi - lo)), 1e-9)
