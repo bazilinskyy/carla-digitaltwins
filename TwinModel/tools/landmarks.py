@@ -64,6 +64,12 @@ TUE_CAMPUS = {
                         "fill": {"x": [-282.4, -259.6], "axis_y": -34.9, "drive_half": 3.5, "walk_m": 2.0,
                                  "kerb_m": 0.15},
                         "clearance_m": 4.6, "soffit_under": "NL.IMBAG.Pand.0772100001010279"},
+    # the ground floors, entrances and steps of every building from OSM (tools/osm_detail.py); Atlas's three entrances
+    # have revolving doors at the top of stairs (user, 2026-11-22: OSM tags only the west one and has no stairs at the
+    # north one, in the passage under the tower; 6 steps assumed there, as at the west entrance)
+    "osm": {"type": "osm_detail", "revolving": [[-269.5, -52.9], [-269.5, -140.4], [-285.5, -92.8]],
+            "extra_steps": [{"line": [[-269.5, -49.4], [-269.5, -51.6]], "step_count": 6, "width": 6.0,
+                             "incline": "up", "handrail": "yes"}]},
     "atlas": {"type": "curtain_wall", "building": "NL.IMBAG.Pand.0772100001010279",
               "bay_m": 1.8, "storey_m": 3.6, "fins_min_height_m": 20.0},
     "tue_letters": {"type": "roof_letters", "building": "NL.IMBAG.Pand.0772100001003373",
@@ -743,11 +749,48 @@ def apply(ue: Path, spec: dict = TUE_CAMPUS, facing: str | None = None) -> dict:
     _solid(ue, name, textures, "lm_red", (199, 33, 37), 0.45, 0.0)     # TU/e red #C72125
     _solid(ue, name, textures, "lm_steel", (62, 64, 68), 0.5, 0.7)
     _solid(ue, name, textures, "lm_soffit", (186, 184, 178), 0.8, 0.0)
-    for k in ("lm_alu", "lm_spandrel", "lm_fin", "lm_red", "lm_steel", "lm_soffit"):
+    _solid(ue, name, textures, "lm_core", (168, 166, 160), 0.85, 0.0)       # exposed concrete
+    _solid(ue, name, textures, "lm_steps", (150, 148, 142), 0.9, 0.0)
+    for k in ("lm_alu", "lm_spandrel", "lm_fin", "lm_red", "lm_steel", "lm_soffit", "lm_core", "lm_steps"):
         files += [textures[k]["base_color"], textures[k]["orm"]]
 
     for lm, s in spec.items():
-        if s["type"] == "passage":
+        if s["type"] == "osm_detail":
+            import osm_detail
+            parts = {k: Mesh() for k in ("soffit", "core", "steps", "rail", "door_glass", "door_frame")}
+            walls = {}
+
+            def append_wall(b, a2, b2, n, za, zb, ztop, walls=walls):
+                """A wall of a building's own facade (its 3DBAG style), from the ground to ztop, facing n."""
+                style = b.get("style") or "office_glass"
+                key = next((k for k in textures if k.startswith(f"facade_{style}_")), None) or \
+                    next(k for k in textures if k.startswith("facade_"))
+                tex = textures[key]
+                bay, storey = tex.get("bay_m", 1.8), tex.get("storey_m", 3.6)
+                mid = (np.asarray(a2) + np.asarray(b2)) / 2
+                tile = _tile_index(float(mid[0]), float(mid[1]), tile_m)
+                m = walls.setdefault((tile, key), Mesh())
+                q = np.array([[a2[0], a2[1], za], [b2[0], b2[1], zb], [b2[0], b2[1], ztop], [a2[0], a2[1], ztop]])
+                tdir = np.array([-n[1], n[0], 0.0])
+                base = b["base_z_cm"] / 100.0
+                uv = np.column_stack([q @ tdir / bay / facades.TEX_BAYS,
+                                      -(q[:, 2] - base) / storey / facades.TEX_STOREYS])
+                m.add(q, np.array([n[0], n[1], 0.0]), uv, [[0, 1, 2], [0, 2, 3]])
+            rep = osm_detail.apply(ue, man, s, parts, append_wall)
+            keys = {"soffit": "lm_soffit", "core": "lm_core", "steps": "lm_steps", "rail": "lm_alu",
+                    "door_glass": "lm_fin", "door_frame": "lm_alu"}
+            for part, mesh in parts.items():
+                arr = mesh.arrays()
+                if arr is not None:
+                    files.append(_write_asset(ue, man, name, lm, part, keys[part], tile_m, arr, keys[part]))
+            for (tile, key), mesh in walls.items():
+                arr = mesh.arrays()
+                if arr is None:
+                    continue
+                files.append(_write_asset(ue, man, name, lm, f"wall_{tile[0]}_{tile[1]}_{key}".replace("-", "m"), key,
+                                          tile_m, arr, key, extra={"kind": "building_3dbag", "tile": list(tile)}))
+            report[lm] = rep
+        elif s["type"] == "passage":
             pr = passage(ue, man, s)
             clear.append((pr["area"], pr["z_top"], s.get("soffit_under"), pr["fill"]))
             report[lm] = pr["report"]
@@ -761,21 +804,6 @@ def apply(ue: Path, spec: dict = TUE_CAMPUS, facing: str | None = None) -> dict:
             levels = roof_levels(rv, rf, rn)
             coping(levels, meshes["alu"])
             # the underside of the building over a passage (a concrete soffit at the opening's top)
-            for area, ztop, under, fill in clear:
-                if under != s["building"]:
-                    continue
-                meshes.setdefault("soffit", Mesh())
-                fp = Polygon([(x / 100.0, -y / 100.0) for x, y in b["rings_ue"][0]])
-                under_bldg = fp.intersection(area)
-                if not under_bldg.is_empty:
-                    # the building's fronts along the passage: its entrances (Atlas has one of its three there)
-                    bx0, _, bx1, _ = under_bldg.bounds
-                    passage_fronts(meshes, max(bx0, fill["x0"]), min(bx1, fill["x1"]), fill, ztop, s["bay_m"],
-                                   s["storey_m"])
-                for p in _polys(under_bldg):
-                    verts, tri = _triangulate(p)
-                    meshes["soffit"].add(np.column_stack([verts, np.full(len(verts), ztop)]), np.array([0, 0, -1.0]),
-                                         verts, tri)
             # glass texture with the night mask
             gkey = f"lm_{lm}_glass"
             alb, nrm, orm = glass_textures(s["bay_m"], s["storey_m"], seed=zlib.crc32(lm.encode()))
