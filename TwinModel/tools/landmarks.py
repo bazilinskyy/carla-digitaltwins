@@ -55,6 +55,14 @@ BACKUP = "landmarks_backup"
 PROVENANCE = "landmark: 3DBAG LoD 2.2 massing, detail described (tools/landmarks.py)"
 
 TUE_CAMPUS = {
+    # De Zaale passes under the north end of the Atlas tower at street level (OSM: layer=-1 on the passage). The twin
+    # read it as underground: road 277 dives 6 m and De Zaale stops at the tower, behind a wall. Level it, join it to
+    # road 201 and pave the gap; walls over it start 4.6 m up (the clearance pass's road height).
+    "dezaale_passage": {"type": "passage", "road": "277", "to": "201", "z": 16.2575,
+                        "drop": {"layer": -1, "box": [-285.5, -278.5, -43.0, -26.0]},
+                        "fill": {"x": [-283.0, -259.5], "axis_y": -34.9, "drive_half": 3.5, "walk_m": 2.0,
+                                 "kerb_m": 0.15},
+                        "clearance_m": 4.6, "soffit_under": "NL.IMBAG.Pand.0772100001010279"},
     "atlas": {"type": "curtain_wall", "building": "NL.IMBAG.Pand.0772100001010279",
               "bay_m": 1.8, "storey_m": 3.6, "fins_min_height_m": 20.0},
     "tue_letters": {"type": "roof_letters", "building": "NL.IMBAG.Pand.0772100001003373",
@@ -100,12 +108,12 @@ def glass_textures(bay_m: float, storey_m: float, seed: int = 0, px: int = 1024)
     yy = np.linspace(0.0, 1.0, ph)[:, None]
     for sy in range(ns):
         for bx in range(nb):
-            tint = np.array([52, 70, 84]) + rng.normal(0, 3.0, 3) + rng.normal(0, 2.0)
+            tint = np.array([44, 60, 74]) + rng.normal(0, 3.0, 3) + rng.normal(0, 2.0)
             cell = np.broadcast_to(tint, (ph, pw, 3)).copy()
             cell += (1.0 - yy[..., None]) * 6.0          # a little lighter towards the head (sky)
-            if rng.random() < 0.27:                        # blinds lowered part way
+            if rng.random() < 0.12:                        # blinds lowered part way
                 drop = int(ph * rng.uniform(0.15, 0.7))
-                cell[:drop] = cell[:drop] * 0.55 + np.array([150, 150, 145]) * 0.45
+                cell[:drop] = cell[:drop] * 0.7 + np.array([140, 140, 136]) * 0.3
             fpx = max(2, int(0.05 / bay_m * pw))
             cell[:fpx] = cell[-fpx:] = 150
             cell[:, :fpx] = cell[:, -fpx:] = 150
@@ -118,7 +126,7 @@ def glass_textures(bay_m: float, storey_m: float, seed: int = 0, px: int = 1024)
             rough[y0:y0 + fpx, x0:x0 + pw] = rough[y0 + ph - fpx:y0 + ph, x0:x0 + pw] = 0.35
     alb_u8 = np.clip(np.round(alb), 0, 255).astype(np.uint8)
     nrm_u8 = np.clip(np.round((nrm * 0.5 + 0.5) * 255.0), 0, 255).astype(np.uint8)
-    orm = _orm(rough, 0.35, px=px)
+    orm = _orm(rough, 0.5, px=px)
     return alb_u8, nrm_u8, orm
 
 
@@ -330,7 +338,7 @@ def curtain_wall(planes, base_z, bay, storey, fins_min_z, bid, meshes):
                         cf = _to3(n, d, [s], [(fz0 + fz1) / 2])[0] + n * (0.18 + 0.22)
                         meshes["fin"].box(cf, t, up, n, 0.0125, (fz1 - fz0) / 2 - 0.05, 0.22)
                         stats["fins"] += 1
-        # floor-edge spandrels every storey: 55 cm high, 6 cm proud
+        # floor-edge spandrels every storey: 35 cm high, 6 cm proud
         j0 = max(1, math.ceil((z0 + 0.3 - base_z) / storey))
         for j in range(j0, int(math.floor((z1 - 0.3 - base_z) / storey)) + 1):
             z = base_z + j * storey
@@ -339,8 +347,8 @@ def curtain_wall(planes, base_z, bay, storey, fins_min_z, bid, meshes):
                 if g.is_empty or g.length < 0.5:
                     continue
                 sa, sb = g.bounds[0], g.bounds[2]
-                c = _to3(n, d, [(sa + sb) / 2], [z - 0.17])[0] + n * 0.03
-                meshes["spandrel"].box(c, t, up, n, (sb - sa) / 2, 0.275, 0.03)
+                c = _to3(n, d, [(sa + sb) / 2], [z - 0.12])[0] + n * 0.03
+                meshes["spandrel"].box(c, t, up, n, (sb - sa) / 2, 0.175, 0.03)
                 stats["spandrels"] += 1
     stats["panels_m2"] = round(stats["panels_m2"], 1)
     return stats
@@ -395,6 +403,163 @@ def coping(levels, mesh, height=0.9, thick=0.25, min_area=100.0):
                 nout = -nout
             c = np.array([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, z + height / 2]) - nout * thick / 2
             mesh.box(c, ax, np.array([0, 0, 1.0]), nout, ln / 2, height / 2, thick / 2)
+
+
+# --------------------------------------------------------------------------- passages
+
+def patch_xodr(src: Path, dst: Path, spec: dict = TUE_CAMPUS) -> list:
+    """Level and join the roads of each passage in an OpenDRIVE file: road ``road`` becomes a straight line from its
+    start to the start of road ``to``, flat at ``z``, linked to it lane by lane."""
+    import xml.etree.ElementTree as ET
+    tree = ET.parse(src)
+    root = tree.getroot()
+    roads = {r.get("id"): r for r in root.findall("road")}
+    done = []
+    for lm, s in spec.items():
+        if s["type"] != "passage":
+            continue
+        a, b = roads[s["road"]], roads[s["to"]]
+        ga = a.find("planView").findall("geometry")[0]
+        gb = b.find("planView").findall("geometry")[0]
+        x0, y0 = float(ga.get("x")), float(ga.get("y"))
+        x1, y1 = float(gb.get("x")), float(gb.get("y"))
+        length = math.hypot(x1 - x0, y1 - y0)
+        pv = a.find("planView")
+        for g in list(pv):
+            pv.remove(g)
+        g = ET.SubElement(pv, "geometry", s="0", x=f"{x0:.7f}", y=f"{y0:.7f}",
+                          hdg=f"{math.atan2(y1 - y0, x1 - x0):.12f}", length=f"{length:.9f}")
+        ET.SubElement(g, "line")
+        a.set("length", f"{length:.9f}")
+        ep = a.find("elevationProfile")
+        for e in list(ep):
+            ep.remove(e)
+        zb = float(b.find("elevationProfile").findall("elevation")[0].get("a"))
+        ET.SubElement(ep, "elevation", s="0", a=f"{s['z']:.6f}", b=f"{(zb - s['z']) / length:.9f}", c="0", d="0")
+        for road, kind, other, cp in ((a, "successor", s["to"], "start"), (b, "predecessor", s["road"], "end")):
+            link = road.find("link")
+            old = link.find(kind)
+            if old is not None:
+                link.remove(old)
+            el = ET.SubElement(link, kind, elementType="road", elementId=other, contactPoint=cp)
+            if kind == "predecessor":          # predecessor first, as the schema orders them
+                link.remove(el)
+                link.insert(0, el)
+            sec = road.find("lanes").findall("laneSection")[-1 if kind == "successor" else 0]
+            for lane in sec.iter("lane"):
+                if lane.get("id") == "0":
+                    continue
+                ll = lane.find("link")
+                for o in ll.findall(kind):
+                    ll.remove(o)
+                ET.SubElement(ll, kind, id=lane.get("id"))
+        done.append({"road": s["road"], "to": s["to"], "length_m": round(length, 2), "z": s["z"]})
+    tree.write(dst, encoding="utf-8", xml_declaration=True)
+    return done
+
+
+def _fit_uv(v, uv):
+    a = np.column_stack([v[:, 0], v[:, 1], np.ones(len(v))])
+    coef, *_ = np.linalg.lstsq(a, uv, rcond=None)
+    return coef
+
+
+def _append(ue: Path, man: dict, kind: str, layer: int, x: float, y: float, verts, faces, normals):
+    """Append triangles (model coords) to the export's asset of that kind and layer on the tile at (x, y)."""
+    tile = list(_tile_index(x, y, man["tile_m"]))
+    a = next(e for e in man["assets"] if e["kind"] == kind and e["layer"] == layer and list(e["tile"]) == tile)
+    _backup(ue, a["file"])
+    g = read_glb(ue / a["file"])
+    v = gltf_to_model(g["positions"].astype(float))
+    nn = gltf_to_model(g["normals"].astype(float))
+    uv = g["uvs"].astype(float)
+    coef = _fit_uv(v, uv)
+    verts = np.asarray(verts, float)
+    nuv = np.column_stack([verts[:, 0], verts[:, 1], np.ones(len(verts))]) @ coef
+    f = np.concatenate([g["faces"].astype(np.int64), np.asarray(faces, np.int64) + len(v)])
+    bbox = write_glb(ue / a["file"], a["asset"], np.concatenate([v, verts]), np.concatenate([nn, normals]),
+                     np.concatenate([uv, nuv]), f, g["material"])
+    a.update(vertices=int(len(v) + len(verts)), triangles=int(len(f)), bbox_ue=bbox)
+
+
+def _drop(ue: Path, man: dict, layer: int, bx) -> int:
+    """Remove the triangles of a layer whose centre lies in the box (x0, x1, y0, y1)."""
+    n = 0
+    for a in man["assets"]:
+        if a["layer"] != layer or a["kind"] in WALL_KINDS + ("roof", KIND):
+            continue
+        g = read_glb(ue / a["file"])
+        v = gltf_to_model(g["positions"].astype(float))
+        f = g["faces"].astype(np.int64)
+        c = v[f].mean(axis=1)
+        m = (c[:, 0] > bx[0]) & (c[:, 0] < bx[1]) & (c[:, 1] > bx[2]) & (c[:, 1] < bx[3])
+        if not m.any():
+            continue
+        _backup(ue, a["file"])
+        rest = f[~m]
+        n += int(m.sum())
+        if len(rest) == 0:
+            rest = f[:1]   # keep one triangle so the asset stays valid
+        bbox = write_glb(ue / a["file"], a["asset"], v, gltf_to_model(g["normals"].astype(float)),
+                         g["uvs"].astype(float), rest, g["material"])
+        a.update(triangles=int(len(rest)), bbox_ue=bbox)
+    return n
+
+
+def passage(ue: Path, man: dict, s: dict) -> dict:
+    """Pave a passage at street level (drivable lanes, raised sidewalks with kerbs) after dropping the wrongly
+    sunk layer. Returns the clearance area (polygon, z of the opening's top)."""
+    dropped = _drop(ue, man, s["drop"]["layer"], s["drop"]["box"])
+    fx0, fx1 = s["fill"]["x"]
+    yc, hd, wk, kb, z = s["fill"]["axis_y"], s["fill"]["drive_half"], s["fill"]["walk_m"], s["fill"]["kerb_m"], s["z"]
+    up = np.array([0, 0, 1.0])
+    cx, cy = (fx0 + fx1) / 2, yc
+
+    def quad(y0, y1, zz):
+        return [[fx0, y0, zz], [fx1, y0, zz], [fx1, y1, zz], [fx0, y1, zz]], [[0, 1, 2], [0, 2, 3]]
+    v, f = quad(yc - hd, yc + hd, z + 0.004)
+    _append(ue, man, "drivable", 0, cx, cy, v, f, np.tile(up, (4, 1)))
+    vs, fs, ns = [], [], []
+    for (y0, y1) in ((yc - hd - wk, yc - hd), (yc + hd, yc + hd + wk)):
+        q, qf = quad(y0, y1, z + kb)
+        fs += [[i + len(vs) for i in tri] for tri in qf]
+        vs += q
+        ns += [up] * 4
+    _append(ue, man, "sidewalk", 0, cx, cy, vs, fs, np.array(ns))
+    rv, rf, rn = [], [], []
+    for yk, sgn in ((yc - hd, 1.0), (yc + hd, -1.0)):    # kerb faces towards the road
+        q = [[fx0, yk, z], [fx1, yk, z], [fx1, yk, z + kb], [fx0, yk, z + kb]]
+        nrm = np.array([0, sgn, 0.0])
+        tri = [[0, 1, 2], [0, 2, 3]] if sgn < 0 else [[0, 2, 1], [0, 3, 2]]
+        rf += [[i + len(rv) for i in t3] for t3 in tri]
+        rv += q
+        rn += [nrm] * 4
+    _append(ue, man, "riser", 0, cx, cy, rv, rf, np.array(rn))
+    area = box(fx0 - 1.0, yc - hd - wk, fx1 + 1.0, yc + hd + wk)
+    return {"dropped_triangles": dropped, "area": area, "z_top": z + s["clearance_m"],
+            "report": {"dropped_triangles": dropped, "paved_m2": round(area.area, 1)}}
+
+
+def clip_planes(planes, clear: list):
+    """Cut each wall plane polygon away below a clearance area's z_top where the wall's foot crosses it."""
+    out = []
+    for n, d, poly in planes:
+        t = np.array([-n[1], n[0], 0.0])
+        s0, z0, s1, z1 = poly.bounds
+        q = poly
+        for area, ztop in clear:
+            a = n[:2] * d + t[:2] * (s0 - 1)
+            b = n[:2] * d + t[:2] * (s1 + 1)
+            seg = LineString([tuple(a), tuple(b)]).intersection(area.buffer(0.3))
+            for g in getattr(seg, "geoms", [seg]):
+                if g.is_empty or g.length < 0.05:
+                    continue
+                ss = [float(np.dot(np.array(c), t[:2])) for c in g.coords]
+                q = q.difference(box(min(ss), z0 - 1.0, max(ss), ztop))
+        for p in _polys(q):
+            if p.area > 0.3:
+                out.append((n, d, p))
+    return out
 
 
 # --------------------------------------------------------------------------- export plumbing
@@ -495,27 +660,42 @@ def apply(ue: Path, spec: dict = TUE_CAMPUS, facing: str | None = None) -> dict:
     man = json.loads((ue / "manifest.json").read_text())
     name, tile_m = man["name"], man["tile_m"]
     textures = man["textures"]
-    files, report = [], {}
+    files, report, clear = [], {}, []
 
     # materials shared by all landmarks
     _solid(ue, name, textures, "lm_alu", (172, 176, 180), 0.3, 0.9)
-    _solid(ue, name, textures, "lm_spandrel", (38, 41, 45), 0.35, 0.3)
+    _solid(ue, name, textures, "lm_spandrel", (54, 58, 64), 0.35, 0.3)
     _solid(ue, name, textures, "lm_fin", (150, 172, 174), 0.05, 0.4)
     _solid(ue, name, textures, "lm_red", (199, 33, 37), 0.45, 0.0)     # TU/e red #C72125
     _solid(ue, name, textures, "lm_steel", (62, 64, 68), 0.5, 0.7)
-    for k in ("lm_alu", "lm_spandrel", "lm_fin", "lm_red", "lm_steel"):
+    _solid(ue, name, textures, "lm_soffit", (186, 184, 178), 0.8, 0.0)
+    for k in ("lm_alu", "lm_spandrel", "lm_fin", "lm_red", "lm_steel", "lm_soffit"):
         files += [textures[k]["base_color"], textures[k]["orm"]]
 
     for lm, s in spec.items():
-        if s["type"] == "curtain_wall":
+        if s["type"] == "passage":
+            pr = passage(ue, man, s)
+            clear.append((pr["area"], pr["z_top"], s.get("soffit_under")))
+            report[lm] = pr["report"]
+        elif s["type"] == "curtain_wall":
             b, (wv, wf, wn), (rv, rf, rn), removed = cut_building(ue, man, s["building"])
             base_z = b["base_z_cm"] / 100.0
-            planes = wall_planes(wv, wf, wn)
+            planes = clip_planes(wall_planes(wv, wf, wn), [(a, z) for a, z, _ in clear])
             meshes = {k: Mesh() for k in ("glass", "alu", "spandrel", "fin")}
             st = curtain_wall(planes, base_z, s["bay_m"], s["storey_m"], base_z + s["fins_min_height_m"],
                               b["id"], meshes)
             levels = roof_levels(rv, rf, rn)
             coping(levels, meshes["alu"])
+            # the underside of the building over a passage (a concrete soffit at the opening's top)
+            for area, ztop, under in clear:
+                if under != s["building"]:
+                    continue
+                meshes.setdefault("soffit", Mesh())
+                fp = Polygon([(x / 100.0, -y / 100.0) for x, y in b["rings_ue"][0]])
+                for p in _polys(fp.intersection(area)):
+                    verts, tri = _triangulate(p)
+                    meshes["soffit"].add(np.column_stack([verts, np.full(len(verts), ztop)]), np.array([0, 0, -1.0]),
+                                         verts, tri)
             # glass texture with the night mask
             gkey = f"lm_{lm}_glass"
             alb, nrm, orm = glass_textures(s["bay_m"], s["storey_m"], seed=zlib.crc32(lm.encode()))
@@ -535,7 +715,7 @@ def apply(ue: Path, spec: dict = TUE_CAMPUS, facing: str | None = None) -> dict:
             ent.update(windows=rel, use="office", windows_uv_scale=facades.MASK_UV_SCALE, style="landmark_glass",
                        variant=0, bay_m=s["bay_m"], storey_m=s["storey_m"], provenance=PROVENANCE)
             textures[gkey] = ent
-            keys = {"glass": gkey, "alu": "lm_alu", "spandrel": "lm_spandrel", "fin": "lm_fin"}
+            keys = {"glass": gkey, "alu": "lm_alu", "spandrel": "lm_spandrel", "fin": "lm_fin", "soffit": "lm_soffit"}
             for part, mesh in meshes.items():
                 arr = mesh.arrays()
                 if arr is not None:
@@ -610,12 +790,16 @@ def main(argv=None):
     ap.add_argument("ue", type=Path, help="the twin's ue/ export folder (manifest.json)")
     ap.add_argument("--letters-facing", choices=["north", "south", "east", "west"], default=None)
     ap.add_argument("--restore", action="store_true", help="only restore the export from landmarks_backup/")
+    ap.add_argument("--xodr", nargs=2, type=Path, metavar=("IN", "OUT"),
+                    help="also write OUT: the OpenDRIVE IN with the passages levelled and joined")
     args = ap.parse_args(argv)
     if args.restore:
         print("restored" if restore(args.ue) else "nothing to restore")
         return 0
     rep = apply(args.ue, facing=args.letters_facing)
-    print(json.dumps(rep, indent=1))
+    if args.xodr:
+        rep["xodr"] = patch_xodr(args.xodr[0], args.xodr[1])
+    print(json.dumps(rep, indent=1, default=str))
     return 0
 
 
