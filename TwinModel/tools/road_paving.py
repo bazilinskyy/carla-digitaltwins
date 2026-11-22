@@ -196,7 +196,7 @@ def apply(ue: Path, region: str = "NL", log=print) -> dict:
             continue
         _backup(ue, a["file"])
         tri_area = 0.5 * np.linalg.norm(np.cross(v[f[:, 1]] - v[f[:, 0]], v[f[:, 2]] - v[f[:, 0]]), axis=1)
-        for s in sorted(set(sty) - {""}):
+        for s in sorted(str(x) for x in set(sty) - {""}):
             keep = sty == s
             vs, ns, fs = _subset(v, nrm, f, keep)
             uv = vs[:, :2] / TILE_M
