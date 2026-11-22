@@ -20,8 +20,9 @@ TU/e campus (TUeCampus), the default set:
   double-height spaces and add depth (architect's description). Bay 1.8 m and storey 3.6 m are assumed
   (not published); the massing is 3DBAG LoD 2.2.
 * The red "TU/e" letters on the roof of Vertigo (Cursor, 2018 and 2023: "the logo on the roof of Vertigo";
-  capital T and U, a slash, a lowercase e, red). Height, side and facing are not published: 5.5 m letters
-  on the north end, facing north (towards De Zaale and the campus centre), by default.
+  capital T and U, a slash, a lowercase e, red). Height and position are not published: 5.5 m letters on
+  the west edge of the tower roof, facing west towards the station (user's choice, 2026-11-22), placed along
+  the edge where no plant room is in the way.
 
 Usage: python tools/landmarks.py <build>/ue [--letters-facing north|south|east|west] [--restore]
 """
@@ -66,7 +67,7 @@ TUE_CAMPUS = {
     "atlas": {"type": "curtain_wall", "building": "NL.IMBAG.Pand.0772100001010279",
               "bay_m": 1.8, "storey_m": 3.6, "fins_min_height_m": 20.0},
     "tue_letters": {"type": "roof_letters", "building": "NL.IMBAG.Pand.0772100001003373",
-                    "text": "TU/e", "height_m": 5.5, "depth_m": 0.45, "setback_m": 4.0, "facing": "north"},
+                    "text": "TU/e", "height_m": 5.5, "depth_m": 0.45, "setback_m": 4.0, "facing": "west"},
 }
 
 
@@ -731,6 +732,7 @@ def apply(ue: Path, spec: dict = TUE_CAMPUS, facing: str | None = None) -> dict:
             levels = roof_levels(rv, rf, rn, min_area=200.0)
             zmax = max(z for _, z in levels)
             poly, z = max((pz for pz in levels if pz[1] > zmax - 6.0), key=lambda pz: pz[0].area)
+            poly = max(_polys(poly.buffer(-0.6, join_style=2).buffer(0.6, join_style=2)), key=lambda p: p.area)  # no slivers
             mesh_red, mesh_steel = Mesh(), Mesh()
             facing_dir = facing or s.get("facing", "north")
             fwd = {"north": (0, 1), "south": (0, -1), "east": (1, 0), "west": (-1, 0)}[facing_dir]
@@ -746,6 +748,25 @@ def apply(ue: Path, spec: dict = TUE_CAMPUS, facing: str | None = None) -> dict:
             h = s["height_m"]
             shape = shp_scale(shape, h, h, origin=(0, 0))
             w = (maxx - minx) * h
+            # slide along the edge to the nearest spot clear of plant rooms (higher roof parts) and on the roof
+            obstacles = unary_union([p for p, zz in levels if zz > z + 0.8] or [Polygon()])
+            inner = poly.buffer(-0.3)
+            found = None
+            setbacks = [sb for sb in np.arange(s["setback_m"], 0.99, -0.25)] or [s["setback_m"]]
+            for sb in setbacks:            # closest to the wanted setback first, then nearer the edge
+                c1 = centre + fwd * (s["setback_m"] - sb)
+                for k in [0] + [sg * i * 0.5 for i in range(1, 120) for sg in (1, -1)]:
+                    c2 = c1 + right * k
+                    strip = LineString([tuple((c2 - right * w / 2)[:2]),
+                                        tuple((c2 + right * w / 2)[:2])]).buffer(0.4)
+                    if inner.contains(strip) and not strip.intersects(obstacles):
+                        found = (c2, float(sb))
+                        break
+                if found:
+                    break
+            if not found:
+                raise RuntimeError(f"{lm}: no place on the roof edge clear of plant rooms")
+            centre, setback = found
             origin = centre - right * (w / 2) + np.array([0, 0, 0.35])
             # letters in the plane (right, up), extruded towards the viewer (fwd)
             extrude(shape, origin - fwd * s["depth_m"] / 2, right, np.array([0, 0, 1.0]), s["depth_m"], mesh_red)
@@ -760,6 +781,7 @@ def apply(ue: Path, spec: dict = TUE_CAMPUS, facing: str | None = None) -> dict:
             files.append(_write_asset(ue, man, name, lm, "letters", "lm_red", tile_m, mesh_red.arrays(), "lm_red"))
             files.append(_write_asset(ue, man, name, lm, "frame", "lm_steel", tile_m, mesh_steel.arrays(), "lm_steel"))
             report[lm] = {"roof_z": round(z, 2), "width_m": round(w, 2), "height_m": h, "facing": facing_dir,
+                          "setback_m": round(setback, 2),
                           "centre_model": [round(float(c), 2) for c in centre]}
     man["landmarks"] = {"version": 1, "report": report, "files": sorted(set(files))}
     (ue / "manifest.json").write_text(json.dumps(man, indent=1))
