@@ -68,8 +68,11 @@ TUE_CAMPUS = {
     # have revolving doors at the top of stairs (user, 2026-11-22: OSM tags only the west one and has no stairs at the
     # north one, in the passage under the tower; 6 steps assumed there, as at the west entrance)
     "osm": {"type": "osm_detail", "revolving": [[-269.5, -52.9], [-269.5, -140.4], [-285.5, -92.8]],
-            "extra_steps": [{"line": [[-269.5, -49.4], [-269.5, -51.6]], "step_count": 6, "width": 6.0,
-                             "incline": "up", "handrail": "yes"}]},
+            # Atlas's entrance stairs span the entrance fronts (user: "much wider" than 2.5-6 m; estimated from the
+            # fronts between the cores: north and south 10.5 m, west 9 m)
+            "extra_steps": [{"line": [[-269.5, -49.4], [-269.5, -51.6]], "step_count": 6, "width": 10.5,
+                             "incline": "up", "handrail": "yes"}],
+            "step_widths": {"1292493545": 10.5, "1078555767": 9.0}},
     "atlas": {"type": "curtain_wall", "building": "NL.IMBAG.Pand.0772100001010279",
               "bay_m": 1.8, "storey_m": 3.6, "fins_min_height_m": 20.0},
     "tue_letters": {"type": "roof_letters", "building": "NL.IMBAG.Pand.0772100001003373",

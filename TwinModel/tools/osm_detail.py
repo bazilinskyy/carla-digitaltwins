@@ -11,7 +11,7 @@ highway=steps ways; Overpass, cached in ``ue/osm_detail.json``):
 * entrances: a door at each OSM entrance on a building's outline (also on the edge of an open area), facing out:
   a revolving door (door=revolving, or listed in ``revolving``) as a glass drum with four wings and a canopy, else
   a glass sliding door with its frame; standing on the floor its steps lead up to;
-* steps: each highway=steps way as a flight (step_count x 16 cm, width or 2.5 m; incline, else the end at an
+* steps: each highway=steps way as a flight (step_count x 16 cm, width tag, ``step_widths`` by way id, or 3 m; incline, else the end at an
   entrance or the higher ground is the top), with handrails where handrail=yes, and a landing from the top step to
   the door it leads to; ``extra_steps`` adds flights OSM does not have.
 
@@ -35,6 +35,7 @@ from twinmodel.export.ue import _tile_index, gltf_to_model, read_glb, write_glb
 STEP_RISE = 0.16
 STEP_RUN_MAX = 0.40
 DOOR_W, DOOR_H = 2.4, 2.6
+DEFAULT_WIDTH = 3.0          # a flight without a width tag
 DRUM_R, DRUM_H = 1.15, 2.5
 SURFACE_KINDS = ("drivable", "sidewalk", "crossing", "parking", "island", "median", "verge", "ground", "groundplane")
 WALL_KINDS = ("building_3dbag", "building")
@@ -304,10 +305,11 @@ def open_ground(ue, man, osm, ground, meshes, append_wall, log=print):
     return regions, st
 
 
-def flights(osm, ground, entrances, meshes, extra=(), log=print):
+def flights(osm, ground, entrances, meshes, extra=(), widths=None, log=print):
     """Steps (and their landings to the doors they lead to). Returns {entrance id: floor z} and stats."""
     st = {"flights": 0, "steps": 0, "landings": 0, "rails": 0}
     floor = {}
+    widths = widths or {}
     ways = list(osm["steps"]) + [{"id": f"extra{i}", "line": np.asarray(s["line"], float),
                                   "tags": {k: str(v) for k, v in s.items() if k != "line"}} for i, s in enumerate(extra)]
     for s in ways:
@@ -319,7 +321,7 @@ def flights(osm, ground, entrances, meshes, extra=(), log=print):
             continue
         counted = int(_num(t.get("step_count"), 0))
         n = counted or max(2, min(8, int(round(L / 0.32))))       # uncounted: at most 8 (a long way is mostly flat)
-        width = _num(t.get("width"), 2.5)
+        width = float(widths.get(str(s["id"]), _num(t.get("width"), DEFAULT_WIDTH)))
         # which end is the top: incline, else the end at an entrance, else the higher ground
         ent_a = min(entrances, key=lambda e: np.hypot(*(e["xy"] - a)), default=None)
         ent_b = min(entrances, key=lambda e: np.hypot(*(e["xy"] - b)), default=None)
@@ -482,7 +484,8 @@ def apply(ue, man, spec, meshes, append_wall, log=print) -> dict:
     osm = parse(data, project(man))
     ground = Ground(Path(ue), man)
     regions, st_open = open_ground(Path(ue), man, osm, ground, meshes, append_wall, log)
-    floor, st_steps = flights(osm, ground, osm["entrances"], meshes, spec.get("extra_steps", ()), log)
+    floor, st_steps = flights(osm, ground, osm["entrances"], meshes, spec.get("extra_steps", ()),
+                              spec.get("step_widths"), log)
     fps = [Polygon([(x / 100.0, -y / 100.0) for x, y in b["rings_ue"][0]]).buffer(0) for b in man["buildings"]]
     st_doors = doors(osm, ground, fps, regions, floor, meshes, spec.get("revolving", ()), log)
     return {"osm": {"parts": len(osm["parts"]), "entrances": len(osm["entrances"]), "steps": len(osm["steps"]),
