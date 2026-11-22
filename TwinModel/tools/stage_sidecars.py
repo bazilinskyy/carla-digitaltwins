@@ -7,8 +7,10 @@ For every twin level (Content/Carla/Maps/Twins/<Name>/OpenDrive/<Name>.xodr) a c
 Content/Carla/Maps/OpenDrive/<Name>.xodr, where UOpenDrive::FindPathToXODRFile looks first and CARLA's own
 DefaultGame.ini stages loose files into the pak (no per-twin staging lines). In that server copy:
 
-* sign signals (274 speed limit, 205 yield, 206 stop, 306 priority road) are left out where the client draws the
-  real signs (ue/server_signs.py: the Netherlands, NDW), so CARLA spawns no stock US "SPEED LIMIT" plates;
+* sign signals (274 speed limit, 205 yield, 206 stop, 306 priority road) are left out wherever CARLA's stock plates
+  are not the country's design (ue/server_signs.py: everywhere but the US-design countries), so CARLA spawns no US
+  "SPEED LIMIT" plates in Eindhoven, Salamanca or Tokyo; the client draws the real signs (NDW in the Netherlands,
+  OSM elsewhere, in the country's design);
 * with ``light_actors: none`` the traffic-light and pedestrian-light signals (1000001, 1000002) are left out too:
   CARLA then spawns no traffic-light actors (EhvCity: 2,687, ~10 ms of every server tick), and the simulator's own
   lights (SUMO's programmes, coupled-carla's signal heads) are the only ones; CARLA's Traffic Manager and agents see

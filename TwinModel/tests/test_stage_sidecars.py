@@ -26,11 +26,11 @@ def test_light_free_and_sign_free_server_copies(tmp_path):
     city, campus, shibuya = ((od / f"{n}.xodr").read_text() for n in ("EhvCity", "TUeCampus", "ShibuyaCrossing"))
     assert 'type="1000001"' not in city and 'type="274"' not in city              # no lights, no signs
     assert 'type="1000001"' in campus and 'type="274"' not in campus              # lights kept, signs out (NL)
-    assert 'type="1000001"' in shibuya and 'type="274"' in shibuya                # JP: CARLA's own, untouched
+    assert 'type="1000001"' in shibuya and 'type="274"' not in shibuya            # JP: lights kept, US plates out
     assert man["EhvCity"]["light_actors"] == "none" and man["EhvCity"]["country"] == "NL"
     assert man["EhvCity"]["dropped"] == {"274": 1, "205": 1, "1000001": 1}
     assert man["TUeCampus"]["light_actors"] == "carla" and man["TUeCampus"]["signs"] == "client"
-    assert man["ShibuyaCrossing"]["signs"] == "carla" and man["ShibuyaCrossing"]["dropped"] == {}
+    assert man["ShibuyaCrossing"]["signs"] == "client"      # JP: no US plates either
     assert json.dumps(man)                                                         # the manifest serialises
 
 
@@ -70,7 +70,7 @@ def test_country_from_place_record_then_origin_not_the_profile_stamp(tmp_path):
     assert (man["ZurichHB"]["country"], man["ZurichHB"]["country_source"]) == ("CH", "OpenDRIVE origin")
     assert (man["SalamancaPlaza"]["country"], man["SalamancaPlaza"]["country_source"]) == ("ES", "OpenDRIVE signals")
     assert (60.169, 24.948) not in asked                              # the place record answered first
-    assert man["HelsinkiSenate"]["signs"] == "carla"                  # FI: CARLA's own signs stay
+    assert man["HelsinkiSenate"]["signs"] == "client"                 # FI: the client draws the signs
 
 
 def test_levels_file_country_beats_place_record(tmp_path):

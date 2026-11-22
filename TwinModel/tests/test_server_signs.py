@@ -31,7 +31,10 @@ def test_modes_and_country(tmp_path):
     nl.write_text(XODR.format(c="NL"))
     assert ss.xodr_country(nl) == "NL"
     assert ss.types_to_drop("auto", "NL") == ss.SIGN_TYPES
-    assert ss.types_to_drop("auto", "ES") == ()          # no client sign register there: CARLA's own signs stay
+    assert ss.types_to_drop("auto", "ES") == ss.SIGN_TYPES   # CARLA's US plates are not Spain's: the client draws them
+    assert ss.types_to_drop("auto", "JP") == ss.SIGN_TYPES and ss.types_to_drop("auto", "FI") == ss.SIGN_TYPES
+    assert ss.types_to_drop("auto", "US") == () and ss.types_to_drop("auto", "ca") == ()   # US designs: stock stays
+    assert ss.types_to_drop("auto", None) == ()          # unknown country: nothing dropped
     assert ss.types_to_drop("none", "US") == ss.SIGN_TYPES and ss.types_to_drop("stock", "NL") == ()
     with pytest.raises(ValueError):
         ss.types_to_drop("regional", "NL")
