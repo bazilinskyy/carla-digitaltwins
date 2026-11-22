@@ -315,7 +315,8 @@ def flights(osm, ground, entrances, meshes, extra=(), log=print):
         L = float(np.sum(np.hypot(*np.diff(line, axis=0).T)))
         if L < 0.5:
             continue
-        n = int(_num(t.get("step_count"), 0)) or max(2, int(round(L / 0.32)))
+        counted = int(_num(t.get("step_count"), 0))
+        n = counted or max(2, min(8, int(round(L / 0.32))))       # uncounted: at most 8 (a long way is mostly flat)
         width = _num(t.get("width"), 2.5)
         # which end is the top: incline, else the end at an entrance, else the higher ground
         ent_a = min(entrances, key=lambda e: np.hypot(*(e["xy"] - a)), default=None)
@@ -331,6 +332,10 @@ def flights(osm, ground, entrances, meshes, extra=(), log=print):
             top_b = db < da
         else:
             top_b = (ground.z(*b, 0) or 0) >= (ground.z(*a, 0) or 0)
+        # steps down to a basement entrance (level -1, bicycle cellars) cannot be dug into the ground plate: left out
+        near = [e for e in entrances if min(np.hypot(*(e["xy"] - a)), np.hypot(*(e["xy"] - b))) < 6.0]
+        if any(_num(e["tags"].get("level"), 0) < 0 for e in near) or _num(t.get("level"), 0) < 0:
+            continue
         lo, hi = (a, b) if top_b else (b, a)
         fwd = (hi - lo) / max(np.hypot(*(hi - lo)), 1e-9)
         z0 = ground.z(lo[0], lo[1], None)
