@@ -570,8 +570,48 @@ def passage(ue: Path, man: dict, s: dict) -> dict:
     _append(ue, man, "riser", 0, cx, cy, rv, rf, np.array(rn))
     area = box(fx0 - 1.0, yc - hd - wk, fx1 + 1.0, yc + hd + wk)
     return {"dropped_triangles": dropped, "area": area, "z_top": max(z_w, z_e) + s["clearance_m"],
+            "fill": {"x0": fx0, "x1": fx1, "yc": yc, "hd": hd, "wk": wk, "kb": kb, "z_w": z_w, "z_e": z_e},
             "report": {"dropped_triangles": dropped, "paved_m2": round(area.area, 1),
                        "z_west": round(z_w, 3), "z_east": round(z_e, 3)}}
+
+
+def passage_fronts(meshes, x0, x1, fill, ztop, bay, storey):
+    """Entrance fronts on both sides of a passage under a building, facing into it: glazing from the pavement to a
+    dark fascia under the soffit, aluminium mullions every bay, a transom at door height and two sliding-door frames
+    per side. Without them the passage shows the building's empty inside through the backs of its outer walls."""
+    yc, hd, wk, kb = fill["yc"], fill["hd"], fill["wk"], fill["kb"]
+    up = np.array([0, 0, 1.0])
+    span = x1 - x0
+    if span < 3.0:
+        return
+
+    def zfoot(x):        # the pavement's top along the passage (the fill slopes from z_w to z_e)
+        u = (x - fill["x0"]) / max(fill["x1"] - fill["x0"], 1e-6)
+        return fill["z_w"] + (fill["z_e"] - fill["z_w"]) * u + kb
+    for y, n in ((yc - hd - wk, np.array([0, 1.0, 0])), (yc + hd + wk, np.array([0, -1.0, 0]))):
+        t = np.array([1.0, 0, 0])
+        za, zb = zfoot(x0), zfoot(x1)
+        zg = ztop - 0.7                                          # glazing top, the fascia above it
+        quad = np.array([[x0, y, za], [x1, y, zb], [x1, y, zg], [x0, y, zg]])
+        uv = np.column_stack([(quad[:, 0] - x0) / bay / facades.TEX_BAYS,
+                              -(quad[:, 2] - za) / storey / facades.TEX_STOREYS])
+        meshes["glass"].add(quad, n, uv, [[0, 1, 2], [0, 2, 3]])
+        zf = (zg + ztop) / 2
+        meshes["spandrel"].box(np.array([(x0 + x1) / 2, y, zf]) + n * 0.04, t, up, n, span / 2, 0.35, 0.04)
+        zm = (za + zb) / 2
+        for k in range(1, int(span / bay) + 1):              # mullions
+            x = x0 + k * bay
+            if x > x1 - 0.2:
+                break
+            meshes["alu"].box(np.array([x, y, (zfoot(x) + zg) / 2]) + n * 0.06, t, up, n, 0.035, (zg - zfoot(x)) / 2, 0.06)
+        meshes["alu"].box(np.array([(x0 + x1) / 2, y, zm + 2.6]) + n * 0.05, t, up, n, span / 2, 0.04, 0.05)  # transom
+        for frac in (1 / 3, 2 / 3):                          # sliding doors: posts, head and the meeting stile
+            xc = x0 + span * frac
+            zd = zfoot(xc)
+            for dx in (-1.2, 1.2):
+                meshes["alu"].box(np.array([xc + dx, y, zd + 1.3]) + n * 0.08, t, up, n, 0.06, 1.3, 0.08)
+            meshes["alu"].box(np.array([xc, y, zd + 1.3]) + n * 0.07, t, up, n, 0.025, 1.3, 0.07)
+            meshes["alu"].box(np.array([xc, y, zd + 2.62]) + n * 0.08, t, up, n, 1.26, 0.06, 0.08)
 
 
 def clip_planes(planes, clear: list):
@@ -709,24 +749,30 @@ def apply(ue: Path, spec: dict = TUE_CAMPUS, facing: str | None = None) -> dict:
     for lm, s in spec.items():
         if s["type"] == "passage":
             pr = passage(ue, man, s)
-            clear.append((pr["area"], pr["z_top"], s.get("soffit_under")))
+            clear.append((pr["area"], pr["z_top"], s.get("soffit_under"), pr["fill"]))
             report[lm] = pr["report"]
         elif s["type"] == "curtain_wall":
             b, (wv, wf, wn), (rv, rf, rn), removed = cut_building(ue, man, s["building"])
             base_z = b["base_z_cm"] / 100.0
-            planes = clip_planes(wall_planes(wv, wf, wn), [(a, z) for a, z, _ in clear])
+            planes = clip_planes(wall_planes(wv, wf, wn), [(a, z) for a, z, _, _ in clear])
             meshes = {k: Mesh() for k in ("glass", "alu", "spandrel", "fin")}
             st = curtain_wall(planes, base_z, s["bay_m"], s["storey_m"], base_z + s["fins_min_height_m"],
                               b["id"], meshes)
             levels = roof_levels(rv, rf, rn)
             coping(levels, meshes["alu"])
             # the underside of the building over a passage (a concrete soffit at the opening's top)
-            for area, ztop, under in clear:
+            for area, ztop, under, fill in clear:
                 if under != s["building"]:
                     continue
                 meshes.setdefault("soffit", Mesh())
                 fp = Polygon([(x / 100.0, -y / 100.0) for x, y in b["rings_ue"][0]])
-                for p in _polys(fp.intersection(area)):
+                under_bldg = fp.intersection(area)
+                if not under_bldg.is_empty:
+                    # the building's fronts along the passage: its entrances (Atlas has one of its three there)
+                    bx0, _, bx1, _ = under_bldg.bounds
+                    passage_fronts(meshes, max(bx0, fill["x0"]), min(bx1, fill["x1"]), fill, ztop, s["bay_m"],
+                                   s["storey_m"])
+                for p in _polys(under_bldg):
                     verts, tri = _triangulate(p)
                     meshes["soffit"].add(np.column_stack([verts, np.full(len(verts), ztop)]), np.array([0, 0, -1.0]),
                                          verts, tri)
