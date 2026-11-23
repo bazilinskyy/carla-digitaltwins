@@ -78,6 +78,18 @@ TUE_CAMPUS = {
             "step_widths": {"1292493545": 10.5, "1078555767": 9.0}},
     "atlas": {"type": "curtain_wall", "building": "NL.IMBAG.Pand.0772100001010279",
               "bay_m": 1.8, "storey_m": 3.6, "fins_min_height_m": 20.0},
+    # Neuron (former Rekencentrum / Laplace, 1971-72; renovated 2021-23 by Team V, opened 2023): measured from the
+    # 2024 PDOK aerial photo and 3DBAG (AHN5, 2024) unless noted. Its crown is a continuous row of white precast
+    # concrete elements with pyramid-shaped faces (2.5 m each, four per 10.1 m structural module, a deeper one on
+    # each module line); the central atrium roof is raised (Team V: "a partially raised roof with a special wooden
+    # construction") into twelve square pyramids in a staggered diamond lattice (Heinze: twelve points, 24
+    # triangular glazing units of about 6 m2, two per pyramid: the two north faces, assumed); a balcony runs along
+    # the south front with pairs of red tube railings per module (Stevens Van Dijck: "balconies with red tube
+    # profiles" kept). Assumed (not published): glazed fronts below the crown, storey 4.0 m, balcony at 4.0 m.
+    "neuron": {"type": "faceted_block", "building": "NL.IMBAG.Pand.0772100000301693",
+               "panel_m": 2.525, "module_panels": 4, "crown_m": 2.6, "relief_m": 0.55, "storey_m": 4.0,
+               "pyramids": {"centre": [-83.9, 10.2], "side_m": 30.2, "cells": 6},
+               "balcony": {"side": [0, -1], "depth_m": 2.0, "z_m": 4.0}},
     "tue_letters": {"type": "roof_letters", "building": "NL.IMBAG.Pand.0772100001003373",
                     "text": "TU/e", "height_m": 5.5, "depth_m": 0.45, "setback_m": 4.0, "facing": "west"},
 }
@@ -705,6 +717,175 @@ def _write_asset(ue, man, name, lm, part, key, tile_m, arrays, texture_key, extr
     return rel
 
 
+def drop_roof_in(ue: Path, man: dict, poly) -> int:
+    """Remove the roof triangles whose centre lies in poly (model xy); returns how many."""
+    n = 0
+    for a in man["assets"]:
+        if a["kind"] != "roof":
+            continue
+        g = read_glb(ue / a["file"])
+        v = gltf_to_model(g["positions"].astype(float))
+        f = g["faces"].astype(np.int64)
+        c = v[f].mean(axis=1)
+        m = contains_xy(poly, c[:, 0], c[:, 1])
+        if not m.any():
+            continue
+        _backup(ue, a["file"])
+        rest = f[~m] if (~m).any() else np.zeros((1, 3), np.int64)
+        n += int(m.sum())
+        bbox = write_glb(ue / a["file"], a["asset"], v, gltf_to_model(g["normals"].astype(float)),
+                         g["uvs"].astype(float), rest, g["material"])
+        a.update(triangles=int(len(rest)), bbox_ue=bbox)
+    return n
+
+
+def _tri(mesh: Mesh, a, b, c, up_hint=None):
+    """One triangle, wound so its normal points up (or towards up_hint)."""
+    q = np.array([a, b, c], float)
+    nrm = np.cross(q[1] - q[0], q[2] - q[0])
+    ln = np.linalg.norm(nrm)
+    if ln < 1e-9:
+        return None
+    nrm /= ln
+    hint = np.array([0, 0, 1.0]) if up_hint is None else np.asarray(up_hint, float)
+    if nrm @ hint < 0:
+        q, nrm = q[[0, 2, 1]], -nrm
+    mesh.add(q, nrm, q[:, :2] if abs(nrm[2]) > 0.7 else _planar_uv(q, nrm), [[0, 1, 2]])
+    return nrm
+
+
+def pyramid_roof(cx, cy, side, cells, z_base, z_apex, z_around, roof: Mesh, glass: Mesh, skirt: Mesh):
+    """Square pyramids on a diamond lattice over a raised square: lattice points (i, j), i + j odd, every
+    side/cells; interior ones are apexes at z_apex, those on the square's edge stay at z_base (flat triangles), so a
+    6 x 6 square holds twelve pyramids. The two north faces of each pyramid carry an inset glazing triangle. A
+    skirt closes the sides from the surrounding roof (z_around) up to the platform."""
+    a = side / cells
+    x0, y0 = cx - side / 2, cy - side / 2
+    P = lambda i, j, z: np.array([x0 + i * a, y0 + j * a, z])       # noqa: E731
+    n_glass, n_pyr = 0, 0
+    for i in range(cells + 1):
+        for j in range(cells + 1):
+            if (i + j) % 2 == 0:
+                continue
+            inner = 0 < i < cells and 0 < j < cells
+            apex = P(i, j, z_apex if inner else z_base)
+            n_pyr += inner
+            nbrs = {"E": (i + 1, j), "N": (i, j + 1), "W": (i - 1, j), "S": (i, j - 1)}
+            for f1, f2 in (("N", "E"), ("N", "W"), ("S", "E"), ("S", "W")):
+                (i1, j1), (i2, j2) = nbrs[f1], nbrs[f2]
+                if not (0 <= i1 <= cells and 0 <= j1 <= cells and 0 <= i2 <= cells and 0 <= j2 <= cells):
+                    continue
+                b1, b2 = P(i1, j1, z_base), P(i2, j2, z_base)
+                nrm = _tri(roof, apex, b1, b2)
+                if inner and f1 == "N" and nrm is not None:       # the north faces: glazing inset to 60 %
+                    cen = (apex + b1 + b2) / 3
+                    q = [cen + (p - cen) * 0.6 + nrm * 0.03 for p in (apex, b1, b2)]
+                    _tri(glass, *q, up_hint=nrm)
+                    n_glass += 1
+    if z_base - z_around > 0.2:
+        for (ax, ay), (bx, by), out in (((0, 0), (side, 0), (0, -1)), ((side, 0), (side, side), (1, 0)),
+                                        ((side, side), (0, side), (0, 1)), ((0, side), (0, 0), (-1, 0))):
+            pa, pb = np.array([x0 + ax, y0 + ay]), np.array([x0 + bx, y0 + by])
+            skirt.quad([*pa, z_around], [*pb, z_around], [*pb, z_base], [*pa, z_base], np.array([*out, 0.0]))
+    return {"pyramids": n_pyr, "glazing_triangles": n_glass, "cell_m": round(a, 2), "apex_z": round(z_apex, 2),
+            "base_z": round(z_base, 2)}
+
+
+def faceted_crown(planes, ground_z, crown_m, panel_m, module_panels, relief_m, meshes, replaced=None):
+    """Split each facade plane (from the ground) at the crown: below it the plane is returned for glazing, the crown
+    band gets a white concrete backing and a row of pyramid-faced precast elements (panel_m wide, a deeper one on
+    every module line). Planes not standing on the ground (roof plant rooms, lanterns) get plain cladding."""
+    up = np.array([0, 0, 1.0])
+    below, st = [], {"elements": 0, "crown_m2": 0.0, "clad_m2": 0.0}
+    for n, d, poly in planes:
+        s0, z0, s1, z1 = poly.bounds
+        if z0 > ground_z + 1.5:
+            t2 = np.array([-n[1], n[0]])
+            mid = n[:2] * d + t2 * (s0 + s1) / 2
+            if replaced is not None and replaced.buffer(1.0).contains(Point(*mid)):
+                st["replaced_walls"] = st.get("replaced_walls", 0) + 1     # a roof step the new roof replaces
+                continue
+            verts, tri = _triangulate(poly)
+            meshes["clad"].add(_to3(n, d, verts[:, 0], verts[:, 1]), n, verts, tri)
+            st["clad_m2"] += poly.area
+            continue
+        zc = z1 - crown_m
+        low = poly.intersection(box(s0 - 1, z0 - 1, s1 + 1, zc))
+        band = poly.intersection(box(s0 - 1, zc, s1 + 1, z1 + 1))
+        for q in _polys(low):
+            if q.area > 0.3:
+                below.append((n, d, q))
+        for q in _polys(band):
+            verts, tri = _triangulate(q)
+            meshes["concrete"].add(_to3(n, d, verts[:, 0], verts[:, 1]), n, verts, tri)
+            st["crown_m2"] += q.area
+        if s1 - s0 < panel_m * 0.9:
+            continue
+        t = np.array([-n[1], n[0], 0.0])
+        k0 = math.floor(s0 / panel_m)
+        for k in range(k0, int(math.ceil(s1 / panel_m))):
+            sa, sb = k * panel_m, (k + 1) * panel_m
+            if sa < s0 - 0.01 or sb > s1 + 0.01:
+                continue
+            if not poly.buffer(0.05).contains(box(sa, zc, sb, z1 - 0.05)):
+                continue
+            deep = (k % module_panels) == 0
+            r = relief_m * (1.8 if deep else 1.0)
+            base = n * d
+            c0 = base + t * sa + up * zc
+            c1 = base + t * sb + up * zc
+            c2 = base + t * sb + up * z1
+            c3 = base + t * sa + up * z1
+            apex = base + t * (sa + sb) / 2 + up * (zc + z1) / 2 + n * r
+            for pa, pb in ((c0, c1), (c1, c2), (c2, c3), (c3, c0)):
+                q = np.array([pa, pb, apex])
+                nrm = np.cross(q[1] - q[0], q[2] - q[0])
+                nrm /= max(np.linalg.norm(nrm), 1e-9)
+                if nrm @ n < 0:
+                    q, nrm = q[[0, 2, 1]], -nrm
+                meshes["concrete"].add(q, nrm, _planar_uv(q, nrm), [[0, 1, 2]])
+            st["elements"] += 1
+    st["crown_m2"], st["clad_m2"] = round(st["crown_m2"], 1), round(st["clad_m2"], 1)
+    return below, st
+
+
+def balcony(planes, side, depth, z, panel_m, module_panels, meshes):
+    """A balcony slab along the facade planes facing ``side`` at height z, a column under every module line and
+    a pair of red tube railings per module on its edge."""
+    up = np.array([0, 0, 1.0])
+    side = np.array([side[0], side[1], 0.0])
+    st = {"m": 0.0, "railings": 0, "columns": 0}
+    for n, d, poly in planes:
+        if n @ side < 0.95:
+            continue
+        s0, z0, s1, z1 = poly.bounds
+        if z0 > z or s1 - s0 < 5:
+            continue
+        t = np.array([-n[1], n[0], 0.0])
+        mid = n * d + t * (s0 + s1) / 2
+        meshes["concrete"].box(mid + n * depth / 2 + up * (z - 0.15), t, up, n, (s1 - s0) / 2, 0.15, depth / 2)
+        st["m"] += s1 - s0
+        module = panel_m * module_panels
+        k0 = math.ceil(s0 / module)
+        for k in range(k0, int(math.floor(s1 / module)) + 1):
+            sm = k * module
+            col = n * d + t * sm + n * (depth - 0.3)
+            meshes["concrete"].box(col + up * (z0 + (z - 0.3 - z0) / 2), t, up, n, 0.2, (z - 0.3 - z0) / 2, 0.2)
+            st["columns"] += 1
+            for off in (-0.25, 0.25):                 # two railings per module, either side of its middle
+                sc = sm + module * (0.5 + off)
+                if sc > s1 - 1.0:
+                    continue
+                edge = n * d + t * sc + n * (depth - 0.08)
+                for e in (-0.9, 0.9):                  # posts
+                    meshes["red"].box(edge + t * e + up * (z + 0.55), t, up, n, 0.03, 0.55, 0.03)
+                for hz in (1.08, 0.55):                # top rail and knee rail
+                    meshes["red"].box(edge + up * (z + hz), t, up, n, 0.93, 0.03, 0.03)
+                st["railings"] += 1
+    st["m"] = round(st["m"], 1)
+    return st
+
+
 def cut_building(ue: Path, man: dict, bid: str):
     """Remove one building's wall triangles from the shared wall meshes; return them (model coords)."""
     b = next(x for x in man["buildings"] if x["id"] == bid)
@@ -775,7 +956,10 @@ def apply(ue: Path, spec: dict | None = None, facing: str | None = None) -> dict
     _solid(ue, name, textures, "lm_soffit", (186, 184, 178), 0.8, 0.0)
     _solid(ue, name, textures, "lm_core", (168, 166, 160), 0.85, 0.0)       # exposed concrete
     _solid(ue, name, textures, "lm_steps", (150, 148, 142), 0.9, 0.0)
-    for k in ("lm_alu", "lm_spandrel", "lm_fin", "lm_red", "lm_steel", "lm_soffit", "lm_core", "lm_steps"):
+    _solid(ue, name, textures, "lm_concrete_white", (222, 220, 212), 0.8, 0.0)   # white precast concrete
+    _solid(ue, name, textures, "lm_roofing", (66, 68, 70), 0.85, 0.0)            # dark roof covering
+    for k in ("lm_alu", "lm_spandrel", "lm_fin", "lm_red", "lm_steel", "lm_soffit", "lm_core", "lm_steps",
+              "lm_concrete_white", "lm_roofing"):
         files += [textures[k]["base_color"], textures[k]["orm"]]
 
     for lm, s in spec.items():
@@ -855,6 +1039,50 @@ def apply(ue: Path, spec: dict | None = None, facing: str | None = None) -> dict
             b["landmark"] = lm
             st.update(walls=len(planes), roof_levels=len(levels), removed_triangles=removed)
             report[lm] = st
+        elif s["type"] == "faceted_block":
+            b, (wv, wf, wn), (rv, rf, rn), removed = cut_building(ue, man, s["building"])
+            base_z = b["base_z_cm"] / 100.0
+            planes = clip_planes(wall_planes(wv, wf, wn), [(a, z) for a, z, _, _ in clear])
+            meshes = {k: Mesh() for k in ("glass", "alu", "spandrel", "fin", "concrete", "clad", "red", "roofing",
+                                          "roof_glass")}
+            sq = None
+            if s.get("pyramids"):
+                cx, cy = s["pyramids"]["centre"]
+                half = s["pyramids"]["side_m"] / 2
+                sq = box(cx - half, cy - half, cx + half, cy + half)
+            below, st = faceted_crown(planes, base_z, s["crown_m"], s["panel_m"], s["module_panels"],
+                                      s["relief_m"], meshes, replaced=sq)
+            bay = s["panel_m"] / 2
+            st.update(curtain_wall(below, base_z, bay, s["storey_m"], 1e9, b["id"], meshes))
+            if s.get("balcony"):
+                bc = s["balcony"]
+                st["balcony"] = balcony(planes, bc["side"], bc["depth_m"], base_z + bc["z_m"], s["panel_m"],
+                                        s["module_panels"], meshes)
+            if s.get("pyramids"):
+                pr = s["pyramids"]
+                rz = rv[:, 2].reshape(-1)
+                tri_c = rv[rf].mean(axis=1)
+                tri_z = rv[rf][:, :, 2]
+                inside = contains_xy(sq.buffer(-1.0), tri_c[:, 0], tri_c[:, 1])
+                ring = contains_xy(sq.buffer(4.0), tri_c[:, 0], tri_c[:, 1]) & ~contains_xy(sq, tri_c[:, 0], tri_c[:, 1])
+                z_base = float(np.median(tri_z[inside])) if inside.any() else float(np.median(rz))
+                z_apex = float(np.percentile(tri_z[inside], 99)) if inside.any() else z_base + 2.0
+                z_around = float(np.median(tri_z[ring])) if ring.any() else z_base
+                st["roof_dropped"] = drop_roof_in(ue, man, sq)
+                st["pyramids"] = pyramid_roof(cx, cy, pr["side_m"], pr["cells"], z_base, z_apex, z_around,
+                                              meshes["roofing"], meshes["roof_glass"], meshes["roofing"])
+            gkey = f"lm_{lm}_glass"
+            files += _glass_texture(ue, name, textures, gkey, lm, bay, s["storey_m"])
+            keys = {"glass": gkey, "alu": "lm_alu", "spandrel": "lm_spandrel", "fin": "lm_fin",
+                    "concrete": "lm_concrete_white", "clad": "lm_roofing", "red": "lm_red", "roofing": "lm_roofing",
+                    "roof_glass": gkey}
+            for part, mesh in meshes.items():
+                arr = mesh.arrays()
+                if arr is not None:
+                    files.append(_write_asset(ue, man, name, lm, part, keys[part], tile_m, arr, keys[part]))
+            b["landmark"] = lm
+            st.update(walls=len(planes), removed_triangles=removed)
+            report[lm] = st
         elif s["type"] == "roof_letters":
             b = next(x for x in man["buildings"] if x["id"] == s["building"])
             _, _, (rv, rf, rn), _ = cut_building_readonly(ue, man, s["building"])
@@ -915,6 +1143,26 @@ def apply(ue: Path, spec: dict | None = None, facing: str | None = None) -> dict
     man["landmarks"] = {"version": 1, "report": report, "files": sorted(set(files))}
     (ue / "manifest.json").write_text(json.dumps(man, indent=1))
     return report
+
+
+def _glass_texture(ue, name, textures, gkey, lm, bay, storey) -> list:
+    """The curtain-wall glass texture (with its night window mask) as textures[gkey]; returns the files."""
+    files, ent = [], {}
+    alb, nrm, orm = glass_textures(bay, storey, seed=zlib.crc32(lm.encode()))
+    for suf, arr, fld in (("d", alb, "base_color"), ("n", nrm, "normal"), ("orm", orm, "orm")):
+        rel = f"textures/T_{name}_{gkey}_{suf}.png"
+        facades.save_png(ue / rel, arr)
+        ent[fld] = rel
+        files.append(rel)
+    style = facades.Style("landmark_glass", bay, storey, "glass", ((60, 76, 88),), window=GLASS_STYLE.window,
+                          frame=GLASS_STYLE.frame, frame_m=GLASS_STYLE.frame_m, sill=False, glass=GLASS_STYLE.glass)
+    rel = f"textures/T_{name}_{gkey}_w.png"
+    facades.save_png(ue / rel, facades.synth_window_lights(style, 0))
+    files.append(rel)
+    ent.update(windows=rel, use="office", windows_uv_scale=facades.MASK_UV_SCALE, style="landmark_glass",
+               variant=0, bay_m=bay, storey_m=storey, provenance=PROVENANCE)
+    textures[gkey] = ent
+    return files
 
 
 def cut_building_readonly(ue: Path, man: dict, bid: str):

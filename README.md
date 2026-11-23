@@ -107,8 +107,30 @@ python -m twinmodel twin --bbox 35.6555 139.6955 35.6635 139.7055 --name Shibuya
 ```
 
 It finds the place with Nominatim (or takes `--bbox`), runs `build --profile auto`, `bake-export`,
-`tools/real_buildings.py`, `tools/ground_photo.py` where the country has an open aerial photo, writes
-`ATTRIBUTION.md` (every source with its licence; the bake copies it next to the level's `OpenDrive/` and `TM/`
+`tools/real_buildings.py`, `tools/ground_photo.py` where the country has an open aerial photo,
+`tools/road_clearance.py`, then three passes that every twin gets (each redone on every run, from the uncut
+meshes):
+
+- **detail** (`tools/landmarks.py`, `tools/osm_detail.py`): OSM's 3D tagging of the buildings: open ground floors
+  and passages, doors at the OSM entrances (revolving doors where tagged), steps with handrails and landings. A twin
+  can also name hand-described landmarks (`SPECS` by twin name); the TU/e campus has Atlas's curtain wall, the
+  TU/e letters on Vertigo, the De Zaale passage and Neuron (below).
+- **gaps** (`tools/surface_gaps.py`): slots and holes between road and pavement meshes, where the ground plane
+  (about 0.35 m lower) showed through as dark slits across the street, are closed with the surface around them
+  (same kind, on the plane of the nearest triangle: kerbs stay kerbs); a wider strip between different surfaces
+  gets the aerial-photo ground at their height. TUeCampus: 463 gaps (431 m2); EhvCentre: 2,429 (2,896 m2).
+- **paving** (`tools/road_paving.py`): brick and sett streets (OSM `surface`) paved in the road surface itself
+  (herringbone clinkers in the Netherlands, grey pavers elsewhere, setts), no overlay slabs.
+
+**TU/e campus landmarks** (TUeCampus, `tools/landmarks.py`), each from measured data plus published descriptions;
+what is assumed is said in the code. Atlas: the glass curtain wall with fins (Team V), revolving doors at the top of
+its entrance stairs. Neuron (former Rekencentrum / Laplace, renovated by Team V 2021-23): the crown of white
+precast concrete elements with pyramid-shaped faces (2.5 m each, a deeper one every 10.1 m module, from the 2024
+PDOK aerial photo), glazed fronts below it, the south balcony with pairs of red tube railings per module, and the
+raised atrium roof as twelve square pyramids on a diamond lattice with two glazed north faces each (Heinze: twelve
+points, 24 triangular glazing units), heights from 3DBAG (AHN5, 2024). Vertigo: the red TU/e letters on its roof.
+
+It then writes `ATTRIBUTION.md` (every source with its licence; the bake copies it next to the level's `OpenDrive/` and `TM/`
 folders), and with `--bake` runs `bake_level.py` in the CARLA 1.0 editor under a memory watchdog (`--max-rss-gb`,
 `--min-avail-gb`, `--min-start-gb`), then (with `--no-nav-build`) the two navigation builders one at a time. Each
 step prints one plain line (`[twin] done buildings: 1,221 buildings from catastro, ...`); the logs go to
