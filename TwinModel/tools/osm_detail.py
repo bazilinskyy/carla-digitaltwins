@@ -50,6 +50,10 @@ def _num(v, default=0.0):
 
 # --------------------------------------------------------------------------- OSM
 
+OVERPASS = ("https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter",
+            "https://overpass.private.coffee/api/interpreter", "https://overpass.openstreetmap.fr/api/interpreter")
+
+
 def fetch(man: dict, cache: Path, log=print) -> dict:
     """The OSM elements of the twin's box (cached)."""
     if cache.exists():
@@ -58,10 +62,22 @@ def fetch(man: dict, cache: Path, log=print) -> dict:
     s, w, n, e = man["bbox_wgs84"]
     q = (f'[out:json][timeout:150];(way["building:part"]({s},{w},{n},{e});node["entrance"]({s},{w},{n},{e});'
          f'way["highway"]({s},{w},{n},{e}););out tags geom;')
-    r = requests.post("https://overpass-api.de/api/interpreter", data={"data": q},
-                      headers={"User-Agent": "carla-digitaltwins/osm_detail"}, timeout=200)
-    r.raise_for_status()
-    data = r.json()
+    data, errors = None, []
+    for attempt in range(2):          # Overpass servers are often busy (502/504, timeouts): mirrors, then again
+        for url in OVERPASS:
+            try:
+                r = requests.post(url, data={"data": q}, headers={"User-Agent": "carla-digitaltwins/osm_detail"},
+                                  timeout=200)
+                r.raise_for_status()
+                data = r.json()
+                break
+            except Exception as err:  # noqa: BLE001 - try the next mirror
+                errors.append(f"{url}: {err}")
+        if data is not None:
+            break
+        time.sleep(30)
+    if data is None:
+        raise RuntimeError("Overpass failed on every mirror: " + "; ".join(errors[-4:]))
     data["fetched"] = time.strftime("%Y-%m-%d %H:%M:%S")
     cache.write_text(json.dumps(data))
     log(f"osm_detail: {len(data['elements'])} OSM elements fetched")

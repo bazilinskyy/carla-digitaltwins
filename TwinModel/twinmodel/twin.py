@@ -15,6 +15,12 @@ Runs the whole pipeline with the best open data of the place's country (twinmode
 5b. clearance ``tools/road_clearance.py``: building geometry standing on the driving lanes (below 4.6 m) and
               sidewalk lanes (below 2.5 m) is cut out and closed as a passage, or trimmed to the kerb; then
               CARLA's lane samples are checked, and a twin with blocked lanes stops here (twin.json clearance)
+5c. detail   ``tools/landmarks.py``: the buildings' open ground floors, entrances (doors, revolving doors) and
+              steps from OSM's 3D tagging (tools/osm_detail.py), plus the twin's hand-described landmarks if any
+5d. gaps     ``tools/surface_gaps.py``: slots and holes between road and pavement meshes closed (the ground plane
+              showed through as dark slits across the street)
+5e. paving   ``tools/road_paving.py``: brick and sett streets (OSM surface) paved in the road surface itself, the
+              OpenDRIVE marked so coupled-carla lays no overlay slabs
 6. credits    ATTRIBUTION.md (every source with its licence), copied next to the level by the bake
 7. bake       ``ue/bake_level.py`` in the CARLA 1.0 editor (--bake; needs a CARLA ue58-dev source build with
               the editor), under a memory watchdog; the level is /Game/Carla/Maps/Twins/<Name>/<Name>
@@ -53,6 +59,9 @@ STEPS = [
     ("buildings", "Putting in the real buildings with facade styles"),
     ("ground", "Laying the aerial photo on the ground"),
     ("clearance", "Keeping the roads and sidewalks clear of buildings"),
+    ("detail", "Adding entrances, steps and open ground floors from OpenStreetMap"),
+    ("gaps", "Closing gaps between road and pavement surfaces"),
+    ("paving", "Paving brick and cobblestone streets in the road surface"),
     ("credits", "Writing the data credits"),
     ("bake", "Baking the CARLA 1.0 level in the Unreal editor"),
     ("nav", "Building the pedestrian navigation (two more editor runs)"),
@@ -327,8 +336,10 @@ def twin(args) -> int:
             say("note", "ground", "CARLA's ground materials stay")
     else:
         say("skip", "ground", "no open aerial photo here: CARLA's ground materials stay")
-    # 5b. clearance (always redone: it starts from the uncut meshes, about a minute)
+    # 5b. clearance (always redone: it starts from the uncut meshes, about a minute); the steps after it are undone
+    # first, newest first, so each starts again from what the one before it left
     if man_path.exists():
+        _undo_detail(out / "ue")
         ccmd = [py, TOOLS / "road_clearance.py", out, "--max-road", str(args.clearance_max_road),
                 "--max-walk", str(args.clearance_max_walk)]
         ok = step("clearance", ccmd, lambda: False, lambda: _clearance_text(out))
@@ -342,8 +353,19 @@ def twin(args) -> int:
             raise TwinError("Buildings still stand on the lanes after the clearance cut.",
                             f"See {out / 'clearance.json'} (every blocked lane sample with lat/lon); raise "
                             "--clearance-max-road/--clearance-max-walk or --skip clearance to bake anyway.")
+    # 5c-5e. detail, gaps, paving (always redone, in this order: a few minutes)
+    if man_path.exists():
+        if not step("detail", [py, TOOLS / "landmarks.py", out / "ue", "--xodr", xodr, xodr], lambda: False,
+                    lambda: _detail_text(man_path)):
+            say("note", "detail", "the buildings stay without OSM entrances and steps")
+        if not step("gaps", [py, TOOLS / "surface_gaps.py", out / "ue"], lambda: False,
+                    lambda: _gaps_text(man_path)):
+            say("note", "gaps", "the surfaces stay as exported")
+        pcmd = [py, TOOLS / "road_paving.py", out / "ue", "--region", (iso2 or "").upper(), "--xodr", xodr, xodr]
+        if not step("paving", pcmd, lambda: False, lambda: _paving_text(man_path)):
+            say("note", "paving", "paved streets keep asphalt (coupled-carla lays its overlay slabs)")
     # 6. credits
-    say("start", "credits", STEPS[6][1])
+    say("start", "credits", dict(STEPS)["credits"])
     man = _json(man_path) or {}
     text = regions.attribution_text(name, rep, man, extra=("nominatim",) if args.place else ())
     (out / "ATTRIBUTION.md").write_text(text, encoding="utf-8")
@@ -472,6 +494,43 @@ def _clearance_text(out: Path) -> str:
         return f"{cut.get('passage', 0)} passages, {cut.get('trim', 0)} trims (not checked: no carla module)"
     return (f"{cut.get('passage', 0)} passages, {cut.get('trim', 0)} trims; blocked lane samples: "
             f"{a['road']['blocked']} driving, {a['walk']['blocked']} sidewalk")
+
+
+def _undo_detail(ue: Path) -> None:
+    """Undo paving, gap patches and landmarks/OSM detail (newest first), so they can be redone on a fresh export."""
+    if not (ue / "manifest.json").exists() or "assets" not in (_json(ue / "manifest.json") or {}):
+        return
+    sys.path.insert(0, str(TOOLS))
+    import landmarks
+    import road_paving
+    import surface_gaps
+    road_paving.restore(ue)
+    man = json.loads((ue / "manifest.json").read_text())
+    if surface_gaps.remove(ue, man):
+        man.pop("surface_gaps", None)
+        (ue / "manifest.json").write_text(json.dumps(man, indent=1))
+    landmarks.restore(ue)
+
+
+def _detail_text(man_path: Path) -> str:
+    rep = ((_json(man_path) or {}).get("landmarks") or {}).get("report") or {}
+    o = rep.get("osm") or {}
+    st = (o.get("steps") or {}) if isinstance(o.get("steps"), dict) else {}
+    doors = o.get("doors") or {}
+    return (f"{(o.get('osm') or {}).get('entrances', 0)} OSM entrances, {(o.get('osm') or {}).get('steps', 0)} "
+            f"steps ways; doors {doors if isinstance(doors, (int, str)) else len(doors)}"
+            + (f"; landmarks {', '.join(k for k in rep if k != 'osm')}" if len(rep) > 1 else ""))
+
+
+def _gaps_text(man_path: Path) -> str:
+    g = (_json(man_path) or {}).get("surface_gaps") or {}
+    return f"{g.get('gaps', 0)} gaps ({g.get('gap_m2', 0)} m2) closed"
+
+
+def _paving_text(man_path: Path) -> str:
+    p = ((_json(man_path) or {}).get("paving") or {})
+    m2 = p.get("paved_m2") or p.get("report", {}).get("paved_m2") or {}
+    return ", ".join(f"{k} {v:,.0f} m2" for k, v in m2.items()) or "no brick or sett streets here"
 
 
 def _bake_text(out: Path) -> str:

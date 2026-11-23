@@ -24,6 +24,9 @@ TU/e campus (TUeCampus), the default set:
   the west edge of the tower roof, facing west towards the station (user's choice, 2026-11-22), placed along
   the edge where no plant room is in the way.
 
+Every other twin gets the generic set: the OSM detail of its buildings (tools/osm_detail.py), picked by the
+export's name (SPECS).
+
 Usage: python tools/landmarks.py <build>/ue [--letters-facing north|south|east|west] [--restore]
 """
 from __future__ import annotations
@@ -78,6 +81,15 @@ TUE_CAMPUS = {
     "tue_letters": {"type": "roof_letters", "building": "NL.IMBAG.Pand.0772100001003373",
                     "text": "TU/e", "height_m": 5.5, "depth_m": 0.45, "setback_m": 4.0, "facing": "west"},
 }
+
+# every other twin: the OSM detail of its buildings only (open ground floors, entrances, steps); hand-described
+# landmarks are per twin, by the export's name
+GENERIC = {"osm": {"type": "osm_detail"}}
+SPECS = {"TUeCampus": TUE_CAMPUS}
+
+
+def spec_for(name: str) -> dict:
+    return SPECS.get(name, GENERIC)
 
 
 # --------------------------------------------------------------------------- materials
@@ -511,7 +523,8 @@ def _drop(ue: Path, man: dict, layer: int, bx) -> int:
         rest = f[~m]
         n += int(m.sum())
         if len(rest) == 0:
-            rest = f[:1]   # keep one triangle so the asset stays valid
+            rest = np.zeros((1, 3), np.int64)   # one degenerate triangle keeps the asset valid (a kept real one
+            #                                     showed: the sunk road's last triangle dived 6 m in the passage)
         bbox = write_glb(ue / a["file"], a["asset"], v, gltf_to_model(g["normals"].astype(float)),
                          g["uvs"].astype(float), rest, g["material"])
         a.update(triangles=int(len(rest)), bbox_ue=bbox)
@@ -551,10 +564,17 @@ def passage(ue: Path, man: dict, s: dict) -> dict:
     up = np.array([0, 0, 1.0])
     cx, cy = (fx0 + fx1) / 2, yc
 
-    # the street's own height where the fill meets it at both ends, so the joint has no step (a 2 cm step at the
-    # crossing shook the film camera)
-    z_w = _top_z(ue, man, fx0 - 0.6, yc) or z
-    z_e = _top_z(ue, man, fx1 + 0.6, yc) or z
+    # the fill reaches the street's own surface at both ends (a 1.6 m slot was left where the street mesh ended
+    # short of the given x, 2026-11-23), at the street's height there so the joint has no step (a 2 cm step at
+    # the crossing shook the film camera)
+    def street_edge(x, step):
+        for k in range(0, 41):                      # up to 8 m out
+            zz = _top_z(ue, man, x + step * k * 0.2, yc)
+            if zz is not None:
+                return x + step * k * 0.2, zz
+        return x, z
+    fx0, z_w = street_edge(fx0, -1.0)
+    fx1, z_e = street_edge(fx1, 1.0)
 
     def quad(y0, y1, dz):
         return ([[fx0, y0, z_w + dz], [fx1, y0, z_e + dz], [fx1, y1, z_e + dz], [fx0, y1, z_w + dz]],
@@ -736,11 +756,12 @@ def cut_building(ue: Path, man: dict, bid: str):
     return b, pack(walls_v, walls_n), pack(roofs_v, roofs_n), removed
 
 
-def apply(ue: Path, spec: dict = TUE_CAMPUS, facing: str | None = None) -> dict:
+def apply(ue: Path, spec: dict | None = None, facing: str | None = None) -> dict:
     ue = Path(ue)
     restore(ue)
     _backup(ue, "manifest.json")
     man = json.loads((ue / "manifest.json").read_text())
+    spec = spec if spec is not None else spec_for(man["name"])
     name, tile_m = man["name"], man["tile_m"]
     textures = man["textures"]
     files, report, clear = [], {}, []
@@ -930,7 +951,9 @@ def main(argv=None):
         return 0
     rep = apply(args.ue, facing=args.letters_facing)
     if args.xodr:
-        rep["xodr"] = patch_xodr(args.xodr[0], args.xodr[1])
+        spec = spec_for(json.loads((args.ue / "manifest.json").read_text())["name"])
+        if any(s["type"] == "passage" for s in spec.values()):
+            rep["xodr"] = patch_xodr(args.xodr[0], args.xodr[1], spec)
     print(json.dumps(rep, indent=1, default=str))
     return 0
 

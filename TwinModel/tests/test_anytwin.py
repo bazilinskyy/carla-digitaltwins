@@ -556,7 +556,8 @@ def test_twin_runs_the_steps_and_writes_credits(monkeypatch, tmp_path, capsys):
                                            "--cache", str(tmp_path / "data")])
     assert args.func(args) == 0
     steps = [c[c.index("-m") + 2] if "-m" in c else Path(c[1]).name for c in ran]
-    assert steps == ["build", "bake-export", "real_buildings.py", "ground_photo.py", "road_clearance.py"]
+    assert steps == ["build", "bake-export", "real_buildings.py", "ground_photo.py", "road_clearance.py",
+                     "landmarks.py", "surface_gaps.py", "road_paving.py"]
     text = capsys.readouterr().out
     assert "[twin] done build: terrain ign_wcs 790-810 m, photo ign_es" in text
     assert "[twin] skip bake:" in text and "validation findings" in text
@@ -566,10 +567,11 @@ def test_twin_runs_the_steps_and_writes_credits(monkeypatch, tmp_path, capsys):
     summ = json.loads((out / "twin.json").read_text())
     assert summ["level"] == "/Game/Carla/Maps/Twins/Sal/Sal" and summ["buildings"] == 3
     assert summ["country"] == "ES" and summ["region_plan"]["buildings"][0] == "catastro"
-    # a second run skips the steps done before (the clearance cut is always redone: it starts from the uncut meshes)
+    # a second run skips the steps done before (the clearance cut and the steps after it are always redone: they
+    # start from the uncut meshes)
     ran.clear()
     assert args.func(args) == 0
-    assert [Path(c[1]).name for c in ran] == ["road_clearance.py"]
+    assert [Path(c[1]).name for c in ran] == ["road_clearance.py", "landmarks.py", "surface_gaps.py", "road_paving.py"]
 
 
 def test_twin_stops_when_lanes_stay_blocked(monkeypatch, tmp_path, capsys):
