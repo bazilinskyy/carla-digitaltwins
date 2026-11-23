@@ -129,6 +129,12 @@ precast concrete elements with pyramid-shaped faces (2.5 m each, a deeper one ev
 PDOK aerial photo), glazed fronts below it, the south balcony with pairs of red tube railings per module, and the
 raised atrium roof as twelve square pyramids on a diamond lattice with two glazed north faces each (Heinze: twelve
 points, 24 triangular glazing units), heights from 3DBAG (AHN5, 2024). Vertigo: the red TU/e letters on its roof.
+Eight more buildings have facades described from street photos (`facade_style`: bay, storey, wall material and
+colour, windows, frames, optionally another facade for the ground block; Mapillary photos as reference only, not
+shipped): Auditorium (board-marked concrete, glazed upper bays), Vertigo (pale green glass on the black Zwarte Doos),
+Flux (glass and silver aluminium bands), Helix (sand concrete, narrow slots), Luna (white ribbon grid), Nexus
+(silver bands), Gemini-Noord (dark cladding), MetaForum (glass box over a glazed base). The passage under Atlas is
+4.20 m high, as its sign says. The rest of the campus keeps the generator's facades by BAG year and use.
 
 It then writes `ATTRIBUTION.md` (every source with its licence; the bake copies it next to the level's `OpenDrive/` and `TM/`
 folders), and with `--bake` runs `bake_level.py` in the CARLA 1.0 editor under a memory watchdog (`--max-rss-gb`,

@@ -44,7 +44,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import mapbox_earcut as earcut  # noqa: E402
-from shapely import contains_xy  # noqa: E402
+from shapely import contains_xy, make_valid  # noqa: E402
 from shapely.affinity import scale as shp_scale  # noqa: E402
 from shapely.geometry import LineString, MultiPolygon, Point, Polygon, box  # noqa: E402
 from shapely.geometry.polygon import orient  # noqa: E402
@@ -61,12 +61,13 @@ PROVENANCE = "landmark: 3DBAG LoD 2.2 massing, detail described (tools/landmarks
 TUE_CAMPUS = {
     # De Zaale passes under the north end of the Atlas tower at street level (OSM: layer=-1 on the passage). The twin
     # read it as underground: road 277 dives 6 m and De Zaale stops at the tower, behind a wall. Level it, join it to
-    # road 201 and pave the gap; walls over it start 4.6 m up (the clearance pass's road height).
+    # road 201 and pave the gap; walls over it start 4.2 m up (the sign at the passage: "Doorrijhoogte 4.20 m",
+    # Mapillary 2015).
     "dezaale_passage": {"type": "passage", "road": "277", "to": "201", "z": 16.2575,
                         "drop": {"layer": -1, "box": [-285.5, -278.5, -43.0, -26.0]},
                         "fill": {"x": [-282.4, -259.6], "axis_y": -34.9, "drive_half": 3.5, "walk_m": 2.0,
                                  "kerb_m": 0.15},
-                        "clearance_m": 4.6, "soffit_under": "NL.IMBAG.Pand.0772100001010279"},
+                        "clearance_m": 4.2, "soffit_under": "NL.IMBAG.Pand.0772100001010279"},
     # the ground floors, entrances and steps of every building from OSM (tools/osm_detail.py); Atlas's three entrances
     # have revolving doors at the top of stairs (user, 2026-11-22: OSM tags only the west one and has no stairs at the
     # north one, in the passage under the tower; 6 steps assumed there, as at the west entrance)
@@ -90,6 +91,47 @@ TUE_CAMPUS = {
                "panel_m": 2.525, "module_panels": 4, "crown_m": 2.6, "relief_m": 0.55, "storey_m": 4.0,
                "pyramids": {"centre": [-83.9, 10.2], "side_m": 30.2, "cells": 6},
                "balcony": {"side": [0, -1], "depth_m": 2.0, "z_m": 4.0}},
+    # facades described from street photos (Mapillary 2016-2026, reference only; colours and proportions estimated):
+    "auditorium": {"type": "facade_style", "building": "NL.IMBAG.Pand.0772100000936413",
+                   "described": "board-marked beige-grey exposed concrete; an upper strip of glazed bays with aluminium "
+                                "frames; dark recessed windows on the ground floor",
+                   "bay_m": 3.0, "storey_m": 4.2, "wall": "concrete", "colour": [184, 178, 164],
+                   "window": [0.04, 0.96, 0.28, 0.9], "frame": [168, 170, 172], "mullions": 2, "glass": [62, 74, 84],
+                   "base": {"height_m": 4.0, "window": [0.05, 0.95, 0.45, 0.95], "glass": [34, 40, 44],
+                            "frame": [60, 62, 64], "mullions": 1}},
+    "vertigo": {"type": "facade_style", "building": "NL.IMBAG.Pand.0772100001003373",
+                "described": "pale green-tinted glass and glass-panel cladding on the tower and the upper block; the "
+                             "ground block (De Zwarte Doos) black",
+                "bay_m": 1.5, "storey_m": 3.6, "wall": "glass", "colour": [150, 186, 168],
+                "window": [0.03, 0.97, 0.05, 0.95], "frame": [170, 196, 182], "glass": [112, 150, 138],
+                "base": {"height_m": 4.6, "wall": "metal", "colour": [30, 31, 33], "window": [0.06, 0.94, 0.15, 0.85],
+                         "frame": [26, 26, 28], "glass": [28, 32, 36], "bay_m": 3.0, "storey_m": 4.6}},
+    "flux": {"type": "facade_style", "building": "NL.IMBAG.Pand.0772100001017282",
+             "described": "horizontal bands: glass ribbon windows and silver aluminium spandrel panels on every floor",
+             "bay_m": 1.8, "storey_m": 3.6, "wall": "metal", "colour": [176, 180, 184],
+             "window": [0.0, 1.0, 0.32, 0.94], "frame": [150, 154, 158], "mullions": 1, "glass": [60, 82, 104]},
+    "helix": {"type": "facade_style", "building": "NL.IMBAG.Pand.0772100000298397",
+              "described": "sand-coloured precast concrete panels, few windows (narrow vertical slots)",
+              "bay_m": 3.0, "storey_m": 4.0, "wall": "concrete", "colour": [198, 186, 160],
+              "window": [0.42, 0.58, 0.3, 0.85], "frame": [120, 116, 108], "glass": [52, 58, 62]},
+    "luna": {"type": "facade_style", "building": "NL.IMBAG.Pand.0772100001009232",
+             "described": "white slab with horizontal window bands in a white grid",
+             "bay_m": 1.8, "storey_m": 3.2, "wall": "render", "colour": [226, 226, 220],
+             "window": [0.04, 0.96, 0.3, 0.92], "frame": [236, 236, 232], "mullions": 1, "glass": [58, 70, 82]},
+    "nexus": {"type": "facade_style", "building": "NL.IMBAG.Pand.0772100000950006",
+              "described": "silver-grey aluminium bands with strip windows",
+              "bay_m": 1.8, "storey_m": 3.6, "wall": "metal", "colour": [190, 192, 194],
+              "window": [0.0, 1.0, 0.38, 0.88], "frame": [168, 170, 172], "mullions": 1, "glass": [64, 76, 86]},
+    "gemini_noord": {"type": "facade_style", "building": "NL.IMBAG.Pand.0772100000900004",
+                     "described": "dark charcoal cladding with large windows in dark frames",
+                     "bay_m": 2.7, "storey_m": 3.8, "wall": "metal", "colour": [58, 58, 60],
+                     "window": [0.08, 0.92, 0.22, 0.9], "frame": [44, 44, 46], "mullions": 1, "glass": [48, 58, 66]},
+    "metaforum": {"type": "facade_style", "building": "NL.IMBAG.Pand.0772100001013452",
+                  "described": "a glass box over a glazed ground floor in dark steel frames",
+                  "bay_m": 1.5, "storey_m": 3.8, "wall": "glass", "colour": [96, 112, 124],
+                  "window": [0.02, 0.98, 0.03, 0.97], "frame": [190, 194, 198], "glass": [72, 92, 108],
+                  "base": {"height_m": 4.5, "window": [0.03, 0.97, 0.06, 0.94], "frame": [52, 54, 58],
+                           "glass": [44, 56, 64], "bay_m": 2.2, "storey_m": 4.5, "mullions": 1}},
     "tue_letters": {"type": "roof_letters", "building": "NL.IMBAG.Pand.0772100001003373",
                     "text": "TU/e", "height_m": 5.5, "depth_m": 0.45, "setback_m": 4.0, "facing": "west"},
 }
@@ -1083,6 +1125,45 @@ def apply(ue: Path, spec: dict | None = None, facing: str | None = None) -> dict
             b["landmark"] = lm
             st.update(walls=len(planes), removed_triangles=removed)
             report[lm] = st
+        elif s["type"] == "facade_style":
+            # one building's walls with a facade of its own, described from photos (bay, storey, wall material and
+            # colour, windows, frames, floor bands; optionally another facade below base.height_m, e.g. a black
+            # ground block): the twin's generator with these numbers instead of its guess
+            b, (wv, wf, wn), _, removed = cut_building(ue, man, s["building"])
+            base_z = b["base_z_cm"] / 100.0
+            planes = clip_planes(wall_planes(wv, wf, wn), [(a, z) for a, z, _, _ in clear])
+            parts = [("walls", s, None, None)]
+            if s.get("base"):
+                zc = base_z + s["base"]["height_m"]
+                parts = [("walls", s, zc, None), ("base", dict(s, **s["base"]), None, zc)]
+            st = {"walls": len(planes), "removed_triangles": removed, "described": s.get("described", "")}
+            for part, ps, zlo, zhi in parts:
+                key = f"lm_{lm}_{part}"
+                files += _facade_texture(ue, name, textures, key, f"lm_{lm}_{part}", ps)
+                bay, storey = ps["bay_m"], ps["storey_m"]
+                mesh, m2 = Mesh(), 0.0
+                for w, (n, d, poly) in enumerate(planes):
+                    s0, z0, s1, z1 = poly.bounds
+                    if zlo is None and zhi is None:
+                        q = poly
+                    else:
+                        q = make_valid(poly).intersection(box(s0 - 1, zlo if zlo is not None else z0 - 1, s1 + 1,
+                                                              zhi if zhi is not None else z1 + 1))
+                    ou, ov = facades.light_offset(b["id"], w)
+                    for g in _polys(q):
+                        if g.area < 0.05:
+                            continue
+                        verts, tri = _triangulate(g)
+                        uv = np.column_stack([verts[:, 0] / bay / facades.TEX_BAYS + ou,
+                                              -(verts[:, 1] - base_z) / storey / facades.TEX_STOREYS + ov])
+                        mesh.add(_to3(n, d, verts[:, 0], verts[:, 1]), n, uv, tri)
+                        m2 += g.area
+                arr = mesh.arrays()
+                if arr is not None:
+                    files.append(_write_asset(ue, man, name, lm, part, key, tile_m, arr, key))
+                st[f"{part}_m2"] = round(m2, 1)
+            b["landmark"] = lm
+            report[lm] = st
         elif s["type"] == "roof_letters":
             b = next(x for x in man["buildings"] if x["id"] == s["building"])
             _, _, (rv, rf, rn), _ = cut_building_readonly(ue, man, s["building"])
@@ -1162,6 +1243,34 @@ def _glass_texture(ue, name, textures, gkey, lm, bay, storey) -> list:
     ent.update(windows=rel, use="office", windows_uv_scale=facades.MASK_UV_SCALE, style="landmark_glass",
                variant=0, bay_m=bay, storey_m=storey, provenance=PROVENANCE)
     textures[gkey] = ent
+    return files
+
+
+def _facade_texture(ue, name, textures, key, style_name, ps) -> list:
+    """A described facade (spec ps: bay_m, storey_m, wall, colour, window, frame, glass, band, ...) as
+    textures[key], with its night window mask; returns the files."""
+    style = facades.Style(style_name, ps["bay_m"], ps["storey_m"], ps["wall"], (tuple(ps["colour"]),),
+                          window=tuple(ps.get("window", (0.1, 0.9, 0.2, 0.9))),
+                          frame=tuple(ps.get("frame", (60, 62, 66))), frame_m=ps.get("frame_m", 0.06),
+                          mullions=ps.get("mullions", 0), transom=ps.get("transom", False),
+                          sill=ps.get("sill", False), glass=tuple(ps.get("glass", (50, 62, 72))),
+                          band=tuple(ps["band"]) if ps.get("band") else None, band_m=ps.get("band_m", 0.3),
+                          blank=ps.get("blank", False), lintel=ps.get("lintel", False),
+                          mortar=tuple(ps.get("mortar", (190, 185, 175))))
+    files, ent = [], {}
+    alb, nrm, orm = facades.synth_facade(style, 0)
+    for suf, arr, fld in (("d", alb, "base_color"), ("n", nrm, "normal"), ("orm", orm, "orm")):
+        rel = f"textures/T_{name}_{key}_{suf}.png"
+        facades.save_png(ue / rel, arr)
+        ent[fld] = rel
+        files.append(rel)
+    if not style.blank:
+        rel = f"textures/T_{name}_{key}_w.png"
+        facades.save_png(ue / rel, facades.synth_window_lights(style, 0))
+        files.append(rel)
+        ent.update(windows=rel, use=ps.get("use", "office"), windows_uv_scale=facades.MASK_UV_SCALE)
+    ent.update(style=style.name, variant=0, bay_m=style.bay_m, storey_m=style.storey_m, provenance=PROVENANCE)
+    textures[key] = ent
     return files
 
 
