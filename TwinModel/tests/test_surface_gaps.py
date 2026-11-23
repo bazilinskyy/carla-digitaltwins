@@ -58,3 +58,13 @@ def test_open_ground_is_not_a_gap(tmp_path):
     # two roads 8 m apart with a lawn between: no patch
     ue = _export(tmp_path, [("drivable", -20, 20, -10, -4, 16.2), ("drivable", -20, 20, 4, 10, 16.2)])
     assert surface_gaps.apply(ue, log=lambda *a: None)["gaps"] == 0
+
+
+def test_a_steep_neighbour_does_not_send_the_patch_into_the_ground():
+    # nearest triangle a nearly vertical kerb face: its plane at 2 m reaches -284 m (Helsinki, 2026-11-23)
+    kerb = np.array([[0, 0, 16.35], [1, 0, 16.35], [0, 0.001, 16.2]], float)
+    assert abs(surface_gaps._plane_z(kerb, 0.5, 2.0) - 16.35) < 1e-9
+    # a gentle slope extends normally, a far extrapolation is clamped to 0.4 m of the triangle
+    ramp = np.array([[0, 0, 10.0], [1, 0, 10.0], [0, 1, 10.1]], float)
+    assert abs(surface_gaps._plane_z(ramp, 0.5, 2.0) - 10.2) < 1e-9
+    assert abs(surface_gaps._plane_z(ramp, 0.5, 50.0) - 10.5) < 1e-9

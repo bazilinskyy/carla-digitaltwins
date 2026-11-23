@@ -35,6 +35,8 @@ from twinmodel.export.ue import _tile_index, gltf_to_model, read_glb, write_glb
 STEP_RISE = 0.16
 STEP_RUN_MAX = 0.40
 DOOR_W, DOOR_H = 2.4, 2.6
+MAX_SOFFIT_M = 20.0         # a raised part higher than this over the ground floor is OSM missing the parts below
+                            # it, not an opening (NycMidtown 80 m, HelsinkiSenate 22 m, 2026-11-23): stays closed
 DEFAULT_WIDTH = 3.0          # a flight without a width tag
 DRUM_R, DRUM_H = 1.15, 2.5
 SURFACE_KINDS = ("drivable", "sidewalk", "crossing", "parking", "island", "median", "verge", "ground", "groundplane")
@@ -203,6 +205,16 @@ def outward(poly: Polygon, xy):
 
 # --------------------------------------------------------------------------- the passes
 
+def back_wall_segments(r, fp, floors, opens):
+    """The edges of open region r (inside footprint fp) that face the building's enclosed ground floor: a mapped
+    ground-floor part (floors) or, where OSM maps none, the rest of the footprint. Without the second, arcades with no
+    ground-floor part (Salamanca's Plaza Mayor, 44 buildings, 2026-11-23) opened into the empty building shell."""
+    enclosed = unary_union([floors, fp.difference(unary_union(opens)).buffer(-0.05)]).buffer(0.6)
+    inner = r.boundary.difference(fp.exterior.buffer(0.4))
+    return [seg for seg in getattr(inner, "geoms", [inner])
+            if not seg.is_empty and seg.length >= 1.0 and enclosed.intersects(seg)]
+
+
 def open_ground(ue, man, osm, ground, meshes, append_wall, log=print):
     """Open ground floors under raised building parts. Returns {building id: [(region, z_top)]} and stats."""
     from landmarks import _backup, _polys
@@ -225,7 +237,7 @@ def open_ground(ue, man, osm, ground, meshes, append_wall, log=print):
             if not over:
                 continue
             p = min(over, key=lambda q: q["min_h"])           # the lowest part over it is the soffit
-            if r.area < 6.0:
+            if r.area < 6.0 or p["min_h"] > MAX_SOFFIT_M:
                 continue
             # open only where people or traffic pass underneath: an OSM way (footway, steps, road) runs
             # through it (a raised part over an unmapped ground floor, e.g. MetaForum's hall, stays closed)
@@ -298,10 +310,7 @@ def open_ground(ue, man, osm, ground, meshes, append_wall, log=print):
                     prism(meshes["core"], c["poly"], ground.z(cc.x, cc.y, z0) - 0.2, ztop, top=False)
                     st["cores"] += 1
             # where the open area meets an enclosed ground floor: that floor's own wall, facing into the open area
-            inner = r.boundary.difference(fp.exterior.buffer(0.4))
-            for seg in getattr(inner, "geoms", [inner]):
-                if seg.is_empty or seg.length < 1.0 or not floors.buffer(0.6).intersects(seg):
-                    continue
+            for seg in back_wall_segments(r, fp, floors, [q for q, _, _ in out]):
                 cs = np.asarray(seg.coords)
                 for i in range(len(cs) - 1):
                     a2, b2 = cs[i], cs[i + 1]

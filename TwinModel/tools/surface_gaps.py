@@ -49,6 +49,8 @@ CRACK = 1.2            # m: thicker gaps in the open get the photo ground instea
 MIN_M2 = 0.1           # smaller specks are rasterisation noise
 OVERLAP = 0.05         # m the patch reaches under the surfaces it meets
 SINK = 0.003           # m under the surface it extends
+STEEP_NZ = 0.5         # triangles steeper than 60 degrees (kerb faces, risers) give their top edge, not their plane
+PLANE_CLAMP = 0.4      # m a patch vertex may lie above or below the heights of the triangle it extends
 COVER = ("drivable", "parking", "crossing", "sidewalk", "island", "median", "verge", "ground", "curb")
 FILL = ("drivable", "parking", "crossing", "sidewalk", "island", "median")
 PROVENANCE = "inferred: surface gap closed with the neighbouring surface (tools/surface_gaps.py)"
@@ -183,12 +185,17 @@ def _continuous(win, cells, tris, kind, grid, r0, c0):
 
 
 def _plane_z(t, x, y):
-    """z of triangle t's plane at (x, y)."""
+    """z of triangle t's plane at (x, y), within PLANE_CLAMP of the triangle's own heights. A steep triangle (a kerb
+    face, a step riser) gives its top edge: extending its plane sent patches kilometres into the ground (2026-11-23,
+    Helsinki -6.5 km, EhvCentre -282 m)."""
     a, b, c = t
     nrm = np.cross(b - a, c - a)
-    if abs(nrm[2]) < 1e-9:
-        return float(max(a[2], b[2], c[2]))
-    return float(a[2] - (nrm[0] * (x - a[0]) + nrm[1] * (y - a[1])) / nrm[2])
+    lo, hi = float(min(a[2], b[2], c[2])), float(max(a[2], b[2], c[2]))
+    n = float(np.linalg.norm(nrm))
+    if n < 1e-12 or abs(nrm[2]) < STEEP_NZ * n:
+        return hi
+    z = float(a[2] - (nrm[0] * (x - a[0]) + nrm[1] * (y - a[1])) / nrm[2])
+    return min(max(z, lo - PLANE_CLAMP), hi + PLANE_CLAMP)
 
 
 def _polys(g):
