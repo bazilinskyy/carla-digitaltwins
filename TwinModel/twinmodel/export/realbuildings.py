@@ -180,6 +180,29 @@ def find_ortho(build_dir: Path, bbox_wgs84) -> Optional[Path]:
     return None
 
 
+PHOTO_SOURCES_EXCLUDED = ("osm_tiles",)    # a rendered map, not a photo: never the ground or a roof
+
+
+def fetch_twin_ortho(build_dir: Path, man: dict):
+    """(path, provider) of the twin's aerial photo fetched again when its build's cache is not at hand (an export
+    copied to another machine): the providers of the twin's profile (twinmodel.ingest.imagery, e.g. NYS orthos then
+    NAIP in the US) into <build_dir>/data, where find_ortho looks. (None, None) when none answers."""
+    from ..frame import LocalFrame
+    from .. import profiles
+    from ..ingest.imagery import fetch_ortho
+    name = (man.get("profile") or {}).get("name") if isinstance(man.get("profile"), dict) else man.get("profile")
+    prof = profiles.by_name(name) if name in profiles.PROFILES else profiles.get()
+    sources = [x for x in prof.sources.ortho if x not in PHOTO_SOURCES_EXCLUDED]
+    if not sources:
+        return None, None
+    o = man["origin"]
+    bbox = tuple(man["bbox_wgs84"])
+    img = fetch_ortho(LocalFrame(o["lat"], o["lon"]), bbox, cache_dir=Path(build_dir) / "data", sources=sources)
+    if img is None:
+        return None, None
+    return find_ortho(Path(build_dir), bbox), img.source
+
+
 def load_ortho(path: Path, proj: str):
     """(image HxWx3, transform) of an ortho GeoTIFF in the twin's model frame, or None when the
     file is in another frame (the twin origin must land on model (0, 0))."""

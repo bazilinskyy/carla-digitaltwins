@@ -137,3 +137,26 @@ def test_ground_tiles_takes_verges_only_when_asked():
     assert sorted(a["kind"] for a in plain[(0, 0)]) == ["ground"]
     lawns = tool.ground_tiles(man, tool.KINDS + ("verge",))
     assert sorted(a["kind"] for a in lawns[(0, 0)]) == ["ground", "verge"]
+
+
+def test_an_export_without_its_build_cache_fetches_the_profiles_photo(tmp_path, monkeypatch):
+    # NycMidtown, 2026-11-24: its export copied to another machine had no data/ortho_*.tif, so --verges found no photo
+    # for the lawns. The profile's providers (NYS orthos, then NAIP) fetch it again into <build>/data; the rendered
+    # map tiles (osm_tiles) are never taken for a photo.
+    from twinmodel.export import realbuildings
+    from twinmodel.ingest import imagery
+    man = {"profile": "us_urban", "origin": {"lat": 40.7549, "lon": -73.984},
+           "bbox_wgs84": [40.74861, -73.9923, 40.76119, -73.9757]}
+    asked = {}
+
+    def fake_fetch(frame, bbox, cache_dir, sources, **kw):
+        asked["sources"] = list(sources)
+        Path(cache_dir).mkdir(parents=True, exist_ok=True)
+        (Path(cache_dir) / "ortho_40.74861_-73.99230_40.76119_-73.97570_0.25m_abcd1234.tif").write_bytes(b"tif")
+        return type("Img", (), {"source": "nys_orthos"})()
+    monkeypatch.setattr(imagery, "fetch_ortho", fake_fetch)
+    path, src = realbuildings.fetch_twin_ortho(tmp_path, man)
+    assert src == "nys_orthos" and path is not None and path.parent == tmp_path / "data"
+    assert "osm_tiles" not in asked["sources"] and asked["sources"][0] == "nys_orthos"
+    assert realbuildings.ORTHO_CREDITS[src] == "NYS ITS orthoimagery (public domain)"
+    assert realbuildings.find_ortho(tmp_path, man["bbox_wgs84"]) == path      # found as the build's own next time

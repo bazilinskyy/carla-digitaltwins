@@ -308,15 +308,22 @@ def main(argv=None):
     nl = in_nl(man["bbox_wgs84"])
     source = args.source if args.source != "auto" else ("pdok" if nl else "ortho")
     ortho = None
+    fetched = {"source": None}      # the provider when the photo was fetched again (its credit)
 
     def get_ortho():
         nonlocal ortho
         if ortho is None:
             from twinmodel.export.realbuildings import find_ortho, load_ortho
             op = Path(args.ortho) if args.ortho else find_ortho(build, man["bbox_wgs84"])
+            if op is None and not args.ortho:   # an export without its build's cache: the profile's providers
+                op, fetched["source"] = realbuildings.fetch_twin_ortho(build, man)
             ortho = (load_ortho(op, man["geo_reference"]) if op and op.exists() else None) or False
             print("ortho: %s" % (op.name if ortho else "none"))
         return ortho or None
+
+    def ortho_credit():
+        src = fetched["source"]
+        return realbuildings.ORTHO_CREDITS.get(src, src) if src else realbuildings.ortho_credit(build)
 
     import requests
     session = requests.Session()
@@ -367,7 +374,7 @@ def main(argv=None):
         _save_jpg(out / rel, img, quality=args.quality)
         textured[tile] = {"base_color": rel, "normal": f"textures/T_{name}_flat_n.png",
                           "orm": f"textures/T_{name}_ground_orm.png",
-                          "source": PDOK_CREDIT if src == "pdok" else realbuildings.ortho_credit(build)}
+                          "source": PDOK_CREDIT if src == "pdok" else ortho_credit()}
         per_tile[tag] = {"source": src, "objects_filled": st.masked_frac, "shadow": st.shadow_frac,
                          "shadow_gain": list(st.shadow_gain)}
         print("tile %s (%d/%d): %s, objects %.1f %%, shadow %.1f %% x%s" % (
@@ -381,7 +388,7 @@ def main(argv=None):
         "objects_filled_mean": round(float(np.mean([v["objects_filled"] for v in per_tile.values()] or [0])), 4),
         "shadow_mean": round(float(np.mean([v["shadow"] for v in per_tile.values()] or [0])), 4),
         "credit": ([PDOK_CREDIT] if sources.get("pdok") else []) +
-                  ([realbuildings.ortho_credit(build)] if sources.get("ortho") else []) +
+                  ([ortho_credit()] if sources.get("ortho") else []) +
                   ([AHN_CREDIT] if ndsm_ok else [])}
     (out / "manifest.json").write_text(json.dumps(man, indent=1))
     cache.mkdir(parents=True, exist_ok=True)   # outside the Netherlands nothing was fetched into it

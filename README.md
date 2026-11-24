@@ -82,7 +82,10 @@ assets) can then be textured with the 8 cm aerial photo, one 2048 px texture per
 like the 3DBAG roofs; roads, sidewalks, kerbs and markings keep CARLA's materials. Trees, shelters and other
 objects standing more than 2 m above the terrain (AHN 0.5 m surface minus terrain model, CC0) are replaced by
 the visible ground around them, since the scenery places the trees in 3D, and cast shadows are brightened.
-Outside the Netherlands the twin's cached ortho is used, without the object fill:
+Outside the Netherlands the twin's cached ortho is used, without the object fill; an export without its build's
+cache (copied to another machine) fetches it again from the profile's providers into `<build>/data` (e.g. NYS
+orthos, then NAIP in the US; never the rendered map tiles). `--verges` also puts the photo on lawns and verges
+(kind `verge`, which keep CARLA's grass otherwise; NycMidtown has 33):
 
 ```sh
 python TwinModel/tools/ground_photo.py build/mycity            # --undo puts CARLA's ground back
