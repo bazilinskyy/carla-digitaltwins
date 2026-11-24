@@ -202,6 +202,44 @@ def _continuous(win, cells, tris, kind, grid, r0, c0):
     return float(ok[cells].mean()) if cells.any() else 0.0
 
 
+def _bridge_kind(win, cells, tris, kind, grid, r0, c0):
+    """Per cell of `cells`: the kind of surface that lies on two opposite sides of it within REACH at the same
+    height (10 cm), along the rows or the columns (the nearer pair wins), else -1. A footpath crossing a cycle path
+    leaves a gap between two pieces of pavement: its cells nearest the cycle path must not take the cycle path's
+    kind (a road-height notch with kerb faces in the pavement, De Zaale), the pavement bridges it."""
+    road = win > 0
+    n = int(REACH / RES)
+    out = np.full(cells.shape, -1, int)
+    span = np.full(cells.shape, np.inf)
+    for axis in (0, 1):
+        r = road if axis == 1 else road.T
+        c = cells if axis == 1 else cells.T
+        w = win if axis == 1 else win.T
+        idx = np.arange(r.shape[1])[None, :].repeat(r.shape[0], 0)
+        left = np.maximum.accumulate(np.where(r, idx, -1), axis=1)
+        right = np.flip(np.minimum.accumulate(np.flip(np.where(r, idx, r.shape[1] + 1), 1), axis=1), 1)
+        rows, cols = np.nonzero(c)
+        lf, rt = left[rows, cols], right[rows, cols]
+        good = (lf >= 0) & (rt < r.shape[1]) & (cols - lf <= n) & (rt - cols <= n)
+        for j in np.nonzero(good)[0]:
+            ta, tb = w[rows[j], lf[j]] - 1, w[rows[j], rt[j]] - 1
+            if kind[ta] != kind[tb]:
+                continue
+            if axis == 1:
+                ya = yb = grid.y0 + (r0 + rows[j] + 0.5) * RES
+                xa, xb = grid.x0 + (c0 + lf[j] + 0.5) * RES, grid.x0 + (c0 + rt[j] + 0.5) * RES
+                rr, cc = rows[j], cols[j]
+            else:
+                xa = xb = grid.x0 + (c0 + rows[j] + 0.5) * RES
+                ya, yb = grid.y0 + (r0 + lf[j] + 0.5) * RES, grid.y0 + (r0 + rt[j] + 0.5) * RES
+                rr, cc = cols[j], rows[j]
+            if abs(_plane_z(tris[ta], xa, ya) - _plane_z(tris[tb], xb, yb)) >= 0.10:
+                continue
+            if rt[j] - lf[j] < span[rr, cc]:
+                span[rr, cc], out[rr, cc] = rt[j] - lf[j], int(kind[ta])
+    return out
+
+
 def _plane_z(t, x, y):
     """z of triangle t's plane at (x, y), within PLANE_CLAMP of the triangle's own heights. A steep triangle (a kerb
     face, a step riser) gives its top edge: extending its plane sent patches kilometres into the ground (2026-11-23,
@@ -368,6 +406,9 @@ def patches(grid, gap, lab, nlab, tris, kind, layer, src, rid, extend, cid=None)
         _, (ir, ic) = ndimage.distance_transform_edt(win == 0, return_indices=True)
         near_id = win[ir, ic] - 1
         nk = kind[near_id] if extend[i] else np.full(near_id.shape, -1)
+        if extend[i]:      # a surface on two opposite sides bridges the gap, whatever lies nearer
+            bk = _bridge_kind(win, cells, tris, kind, grid, r0, c0)
+            nk = np.where(cells & (bk >= 0), bk, nk)
         ks = [int(k) for k in np.unique(nk[cells]) if (cells & (nk == k)).sum() * RES * RES >= MIN_M2]
         look = {}
         for k in ks:

@@ -147,6 +147,23 @@ def test_a_raised_patch_beside_a_lower_surface_has_no_open_step(tmp_path):
     assert surface_gaps.apply(ue, report_only=True)["gaps"] == 0
 
 
+def test_a_gap_between_two_pavements_is_pavement_not_a_road_notch(tmp_path):
+    # De Zaale, 2026-11-24: a footpath crosses a cycle path and leaves a 2.4 m gap between two pavements. Its cells
+    # nearest the cycle path took the cycle path's kind: a 1.3 m road-height notch with kerb faces in the pavement.
+    # The pavement lies on both sides of the gap at one height, so the gap is pavement up to the cycle path's edge.
+    ue = _export(tmp_path, [("drivable", -20, 20, -4, 0, 15.82),
+                            ("sidewalk", -20, -1.2, 0, 2.0, 15.97), ("sidewalk", 1.2, 20, 0, 2.0, 15.97)],
+                 ground_z=15.6)
+    surface_gaps.apply(ue, log=lambda *a: None)
+    f = _fills(ue)
+    from shapely.geometry import Polygon, box as sbox
+    from shapely.ops import unary_union
+    road = unary_union([Polygon(v[t, :2]) for v, faces, _ in f.get("drivable", []) for t in faces])
+    walk = unary_union([Polygon(v[t, :2]) for v, faces, _ in f["sidewalk"] for t in faces])
+    assert road.intersection(sbox(-1.2, 0.4, 1.2, 2.0)).area < 0.02           # no notch into the crossing
+    assert walk.intersection(sbox(-1.2, 0.4, 1.2, 2.0)).area > 0.95 * 2.4 * 1.6
+    assert _open_steps(ue, -1.1, 1.1, -0.3, 1.95) < 0.15       # the kerb along the cycle path is closed
+
 def test_two_kinds_in_one_gap_meet_on_a_straight_kerb(tmp_path):
     ue = _export(tmp_path, [("drivable", -20, -0.8, -3.5, 3.5, 16.2), ("drivable", 0.8, 20, -3.5, 3.5, 16.2),
                             ("sidewalk", -20, -0.8, 3.5, 5.5, 16.35), ("sidewalk", 0.8, 20, 3.5, 5.5, 16.35)],
