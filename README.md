@@ -112,13 +112,19 @@ It finds the place with Nominatim (or takes `--bbox`), runs `build --profile aut
 meshes):
 
 - **detail** (`tools/landmarks.py`, `tools/osm_detail.py`): OSM's 3D tagging of the buildings: open ground floors
-  and passages, doors at the OSM entrances (revolving doors where tagged), steps with handrails and landings. A twin
+  and passages, doors at the OSM entrances (revolving doors where tagged), steps with handrails and landings. An
+  arcade or passage under a raised building part gets a back wall wherever it meets the building's closed ground floor,
+  so it never opens into an empty shell; a part raised more than 20 m (a high bridge or overhang) leaves the ground
+  floor under it closed. A twin
   can also name hand-described landmarks (`SPECS` by twin name); the TU/e campus has Atlas's curtain wall, the
   TU/e letters on Vertigo, the De Zaale passage and Neuron (below).
 - **gaps** (`tools/surface_gaps.py`): slots and holes between road and pavement meshes, where the ground plane
   (about 0.35 m lower) showed through as dark slits across the street, are closed with the surface around them
   (same kind, on the plane of the nearest triangle: kerbs stay kerbs); a wider strip between different surfaces
-  gets the aerial-photo ground at their height. TUeCampus: 463 gaps (431 m2); EhvCentre: 2,429 (2,896 m2).
+  gets the aerial-photo ground at their height. A neighbour steeper than 60 degrees (a kerb face, a step riser) gives
+  its top edge instead of its plane, and no patch point lies more than 0.4 m above or below the triangle it extends,
+  so a patch can never dive under the street. TUeCampus: 463 gaps (527 m2); EhvCentre: 2,429 (3,632 m2); the other
+  twins 344 (Salamanca) to 2,338 (Shibuya).
 - **paving** (`tools/road_paving.py`): brick and sett streets (OSM `surface`) paved in the road surface itself
   (herringbone clinkers in the Netherlands, grey pavers elsewhere, setts), no overlay slabs.
 
