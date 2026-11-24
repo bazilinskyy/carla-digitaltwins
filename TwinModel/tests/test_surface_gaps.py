@@ -68,6 +68,12 @@ def test_a_steep_neighbour_does_not_send_the_patch_into_the_ground():
     ramp = np.array([[0, 0, 10.0], [1, 0, 10.0], [0, 1, 10.1]], float)
     assert abs(surface_gaps._plane_z(ramp, 0.5, 2.0) - 10.2) < 1e-9
     assert abs(surface_gaps._plane_z(ramp, 0.5, 50.0) - 10.5) < 1e-9
+    # a 40 degree sliver along a pavement's edge continues at 12 % at most past its edge, not at its own slope
+    # (TUeCampus: a patch 0.25 m over the pavement beside it)
+    sliver = np.array([[0, 0, 10.0], [1, 0, 10.0], [0, 0.2, 10.17]], float)
+    (_, _, pz), d = surface_gaps._nearest_on(sliver, 0.5, 0.5)
+    assert d > 0.3 and surface_gaps._plane_z(sliver, 0.5, 0.5) <= pz + 0.12 * d + 1e-9
+    assert abs(surface_gaps._plane_z(sliver, 0.2, 0.05) - 10.0425) < 1e-9          # inside: its own plane
 
 
 def _fills(ue):

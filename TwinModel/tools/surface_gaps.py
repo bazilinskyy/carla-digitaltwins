@@ -62,6 +62,8 @@ OVERLAP = RES / 2 + 0.05  # m the patch reaches past its cells, under the surfac
 SINK = 0.003           # m under the surface it extends
 STEEP_NZ = 0.5         # triangles steeper than 60 degrees (kerb faces, risers) give their top edge, not their plane
 PLANE_CLAMP = 0.4      # m a patch vertex may lie above or below the heights of the triangle it extends
+GRADE = 0.12           # past a triangle's edge its plane continues at this grade at most: a sloping sliver along a
+                       # pavement's edge (40 degrees) otherwise lifts the patch 0.25 m over the pavement (TUeCampus)
 RISE = 0.03            # m: a step higher than this between a patch and its neighbour gets a kerb face
 RISER_FOOT = 0.02      # m the kerb face reaches under the lower surface
 SKIRT = 0.5            # m a patch's free edge reaches down (under the ground plane, like the export's plates)
@@ -211,7 +213,34 @@ def _plane_z(t, x, y):
     if n < 1e-12 or abs(nrm[2]) < STEEP_NZ * n:
         return hi
     z = float(a[2] - (nrm[0] * (x - a[0]) + nrm[1] * (y - a[1])) / nrm[2])
+    (px, py, pz), d = _nearest_on(t, x, y)
+    if d > 0:                          # outside the triangle: the slope goes on, but no steeper than GRADE
+        z = min(max(z, pz - GRADE * d), pz + GRADE * d)
     return min(max(z, lo - PLANE_CLAMP), hi + PLANE_CLAMP)
+
+
+def _nearest_on(t, x, y):
+    """The point of triangle t (seen from above) nearest to (x, y), with its height, and the distance to it."""
+    a, b, c = (np.asarray(q, float) for q in t)
+    p = np.array([x, y], float)
+    ab, ac = b[:2] - a[:2], c[:2] - a[:2]
+    det = ab[0] * ac[1] - ab[1] * ac[0]
+    if abs(det) > 1e-12:
+        ap = p - a[:2]
+        u = (ap[0] * ac[1] - ap[1] * ac[0]) / det
+        w = (ab[0] * ap[1] - ab[1] * ap[0]) / det
+        if u >= 0 and w >= 0 and u + w <= 1:
+            return (x, y, float(a[2] + u * (b[2] - a[2]) + w * (c[2] - a[2]))), 0.0
+    best = None
+    for q, r in ((a, b), (b, c), (c, a)):
+        e = r[:2] - q[:2]
+        L = float(e @ e)
+        s_ = 0.0 if L < 1e-18 else min(max(float((p - q[:2]) @ e) / L, 0.0), 1.0)
+        m = q + s_ * (r - q)
+        d = float(np.hypot(*(p - m[:2])))
+        if best is None or d < best[1]:
+            best = ((float(m[0]), float(m[1]), float(m[2])), d)
+    return best
 
 
 def _polys(g):
