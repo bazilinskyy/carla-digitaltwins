@@ -68,3 +68,90 @@ def test_a_steep_neighbour_does_not_send_the_patch_into_the_ground():
     ramp = np.array([[0, 0, 10.0], [1, 0, 10.0], [0, 1, 10.1]], float)
     assert abs(surface_gaps._plane_z(ramp, 0.5, 2.0) - 10.2) < 1e-9
     assert abs(surface_gaps._plane_z(ramp, 0.5, 50.0) - 10.5) < 1e-9
+
+
+def _fills(ue):
+    man = json.loads((ue / "manifest.json").read_text())
+    out = {}
+    for a in man["assets"]:
+        if a.get("gap_fill"):
+            g = read_glb(ue / a["file"])
+            out.setdefault(a["kind"], []).append((gltf_to_model(g["positions"].astype(float)), g["faces"].astype(int),
+                                                  a))
+    return out
+
+
+def _open_steps(ue, x0, x1, y0, y1, res=0.05):
+    """Metres of step (> 3 cm between the top surfaces of neighbouring cells) with no kerb face on it, in a box."""
+    man = json.loads((ue / "manifest.json").read_text())
+    tris, kind, _, _ = surface_gaps._load(ue, man, fills=True)
+    xs, ys = np.arange(x0, x1, res) + res / 2, np.arange(y0, y1, res) + res / 2
+    X, Y = np.meshgrid(xs, ys)
+    top = np.full(X.shape, np.nan)
+    for t in tris:
+        a, b, c = t
+        d = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+        if abs(d) < 1e-9:
+            continue
+        u = ((X - a[0]) * (c[1] - a[1]) - (Y - a[1]) * (c[0] - a[0])) / d
+        w = ((b[0] - a[0]) * (Y - a[1]) - (b[1] - a[1]) * (X - a[0])) / d
+        ins = (u >= -1e-6) & (w >= -1e-6) & (u + w <= 1 + 1e-6)
+        z = a[2] + u * (b[2] - a[2]) + w * (c[2] - a[2])
+        top = np.where(ins & ~(top >= z), z, top)
+    segs = []
+    for a in man["assets"]:
+        if a["kind"] == "riser":
+            g = read_glb(ue / a["file"])
+            v = gltf_to_model(g["positions"].astype(float))
+            for f in g["faces"].astype(int):
+                q = v[f]
+                segs.append((q[:, :2].min(0), q[:, :2].max(0), q[:, 2].min(), q[:, 2].max()))
+    open_m = 0.0
+    for axis in (0, 1):
+        za, zb = (top[:, :-1], top[:, 1:]) if axis == 1 else (top[:-1], top[1:])
+        step = np.abs(za - zb) > 0.03
+        for r, c in zip(*np.nonzero(step)):
+            mx = X[r, c] + (res / 2 if axis == 1 else 0)
+            my = Y[r, c] + (res / 2 if axis == 0 else 0)
+            lo, hi = min(za[r, c], zb[r, c]), max(za[r, c], zb[r, c])
+            if not any(mn[0] - 0.06 <= mx <= mxx[0] + 0.06 and mn[1] - 0.06 <= my <= mxx[1] + 0.06
+                       and zmin <= lo + 0.01 and zmax >= hi - 0.01 for mn, mxx, zmin, zmax in segs):
+                open_m += res
+    return open_m
+
+
+def test_a_raised_patch_beside_a_lower_surface_has_no_open_step(tmp_path):
+    # De Zaale, 2026-11-24: a footpath crosses a cycle path; the pavements on both sides stop 2.4 m short of each other
+    # and the cycle path's mesh bulges into the gap (15 cm lower). The patch met the bulge on a 0.2 m cell staircase
+    # with no kerb face: black open risers. Now a kerb face (riser material) closes every step, on a straight line.
+    ue = _export(tmp_path, [("drivable", -20, 20, -4, 0, 15.82), ("drivable", -1.0, 0.6, 0, 0.7, 15.82),
+                            ("sidewalk", -20, -1.2, 0, 2.0, 15.97), ("sidewalk", 1.2, 20, 0, 2.0, 15.97)],
+                 ground_z=15.6)
+    surface_gaps.apply(ue, log=lambda *a: None)
+    f = _fills(ue)
+    assert all(a["material"] == "riser" for _, _, a in f["riser"])
+    pts = np.concatenate([v for v, _, _ in f["riser"]])
+    assert pts[:, 2].max() > 15.95 and pts[:, 2].min() < 15.81
+    assert _open_steps(ue, -1.4, 1.4, 0.05, 1.95) < 0.15
+    # the pavement patch covers nothing of the cycle path's bulge (no raised lip over it)
+    from shapely.geometry import Polygon, box as sbox
+    from shapely.ops import unary_union
+    walk = unary_union([Polygon(v[t, :2]) for v, faces, _ in f["sidewalk"] for t in faces])
+    assert walk.intersection(sbox(-1.0, 0, 0.6, 0.7)).area < 0.02
+    assert surface_gaps.apply(ue, report_only=True)["gaps"] == 0
+
+
+def test_two_kinds_in_one_gap_meet_on_a_straight_kerb(tmp_path):
+    ue = _export(tmp_path, [("drivable", -20, -0.8, -3.5, 3.5, 16.2), ("drivable", 0.8, 20, -3.5, 3.5, 16.2),
+                            ("sidewalk", -20, -0.8, 3.5, 5.5, 16.35), ("sidewalk", 0.8, 20, 3.5, 5.5, 16.35)],
+                 ground_z=15.8)
+    surface_gaps.apply(ue, log=lambda *a: None)
+    pts = np.concatenate([v for v, _, _ in _fills(ue)["riser"]])
+    # the kerb face stands on the line between the road and the pavement (within a cell), 15 cm plus its foot high
+    mid = pts[(pts[:, 1] > -3.0) & (pts[:, 1] < 5.0)]
+    assert len(mid) and np.all(np.abs(mid[:, 1] - 3.5) < 0.25)
+    assert abs(mid[:, 2].max() - 16.347) < 0.01 and 16.15 < mid[:, 2].min() < 16.18
+    # the ends of the patches, on nothing in this export, get a skirt under the ground like the export's plates
+    ends = pts[(pts[:, 1] < -3.0) | (pts[:, 1] > 5.0)]
+    assert len(ends) and ends[:, 2].min() < 15.8
+    assert _open_steps(ue, -0.75, 0.75, -3.4, 5.4) < 0.15     # the fixture's own kerb outside the gap has no face

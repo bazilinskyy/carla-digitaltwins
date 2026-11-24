@@ -12,11 +12,16 @@ the road they extend). Generic: no per-place numbers.
 * A crack (at most ``CRACK`` m across) or a gap under a building (a passage) is closed with the surfaces around it:
   each cell takes the kind of the nearest road or pavement, and each patch is that surface extended: its vertices
   lie on the plane of the nearest triangle of that kind (so kerbs stay kerbs and slopes continue), 3 mm under it and
-  reaching 5 cm under the edges it meets (no z-fighting, no seam).
+  reaching 15 cm (half a cell and 5 cm) under the edges it meets (no z-fighting, no seam, no crack).
   So is a wider slot with the same surface at the same height on both sides (a seam across a street).
 * A wider gap in the open between different surfaces (an unmodelled verge or path, up to 2 x ``REACH`` m) is raised
   ground: the aerial-photo ground of the tile (what is really there, grass or paving) at the height of the surfaces
   around it.
+* Where a patch meets a lower surface (a cycle path beside the raised footpath it crosses) it stops at that
+  surface's edge instead of reaching over it, and where a patch and its neighbour differ by more than ``RISE`` m a
+  kerb face (a ``riser`` asset, the export's kerb stone) closes the step: a raised patch's 0.2 m cell staircase
+  showed black open risers on the De Zaale kerbs (2026-11-24). Two kinds of patch in one gap meet on a straightened
+  line, not on the cell staircase.
 * The patches are new assets of that kind (``meshes/gaps/``, ``gap_fill``: true) with the material, texture and UV
   mapping of the neighbouring asset of that kind on the tile. Re-running removes them first (idempotent).
 
@@ -41,16 +46,26 @@ from shapely.geometry import MultiPolygon, Polygon, box  # noqa: E402
 from shapely.geometry.polygon import orient  # noqa: E402
 from shapely.ops import unary_union  # noqa: E402
 
-from twinmodel.export.ue import _tile_index, gltf_to_model, read_glb, write_glb  # noqa: E402
+import shapely  # noqa: E402
+import shapely.ops  # noqa: E402
+from shapely.affinity import affine_transform  # noqa: E402
+from shapely.strtree import STRtree  # noqa: E402
+
+from twinmodel.export.ue import _curb_band_uv, _tile_index, gltf_to_model, read_glb, write_glb  # noqa: E402
 
 RES = 0.2              # m per grid cell
 REACH = 2.5            # m: a gap has road or pavement on two opposite sides within this distance
 CRACK = 1.2            # m: thicker gaps in the open get the photo ground instead of the neighbouring surface
 MIN_M2 = 0.1           # smaller specks are rasterisation noise
-OVERLAP = 0.05         # m the patch reaches under the surfaces it meets
+OVERLAP = RES / 2 + 0.05  # m the patch reaches past its cells, under the surfaces it meets: a surface's edge
+                       # can lie half a cell from the cell edge (with 5 cm, cracks up to 5 cm stayed open)
 SINK = 0.003           # m under the surface it extends
 STEEP_NZ = 0.5         # triangles steeper than 60 degrees (kerb faces, risers) give their top edge, not their plane
 PLANE_CLAMP = 0.4      # m a patch vertex may lie above or below the heights of the triangle it extends
+RISE = 0.03            # m: a step higher than this between a patch and its neighbour gets a kerb face
+RISER_FOOT = 0.02      # m the kerb face reaches under the lower surface
+SKIRT = 0.5            # m a patch's free edge reaches down (under the ground plane, like the export's plates)
+STRAIGHT = 1.5         # cells: tolerance straightening the line between two kinds of patch in one gap
 COVER = ("drivable", "parking", "crossing", "sidewalk", "island", "median", "verge", "ground", "curb")
 FILL = ("drivable", "parking", "crossing", "sidewalk", "island", "median")
 PROVENANCE = "inferred: surface gap closed with the neighbouring surface (tools/surface_gaps.py)"
@@ -111,7 +126,8 @@ def find(ue: Path, man: dict, fills=False, within=None, grid=None):
     tris, kind, layer, src = _load(ue, man, fills)
     grid = grid or Grid(tris)          # later passes keep the first pass's grid (patches reach a little further)
     order = np.argsort(np.array([FILL.index(COVER[k]) if COVER[k] in FILL else -1 for k in kind]), kind="stable")
-    cover = grid.raster_ids(tris[order], order) > 0          # everything that covers the ground
+    cid = grid.raster_ids(tris[order], order)               # what covers the ground (road/pavement on top)
+    cover = cid > 0
     road_ids = np.nonzero(np.isin(kind, [COVER.index(k) for k in FILL]))[0]
     road_ids = road_ids[np.argsort(tris[road_ids, :, 2].mean(axis=1), kind="stable")]   # the top surface wins
     rid = grid.raster_ids(tris[road_ids], road_ids)          # road/pavement triangle id + 1 per cell
@@ -147,7 +163,7 @@ def find(ue: Path, man: dict, fills=False, within=None, grid=None):
             r0, c0 = max(sl[0].start - pad, 0), max(sl[1].start - pad, 0)
             r1, c1 = min(sl[0].stop + pad, gap.shape[0]), min(sl[1].stop + pad, gap.shape[1])
             extend[i] = _continuous(rid[r0:r1, c0:c1], lab[r0:r1, c0:c1] == i, tris, kind, grid, r0, c0) >= 0.5
-    return grid, gap, lab, nlab, tris, kind, layer, src, rid, extend
+    return grid, gap, lab, nlab, tris, kind, layer, src, rid, extend, cid
 
 
 def _continuous(win, cells, tris, kind, grid, r0, c0):
@@ -224,8 +240,94 @@ def _mask_poly(m, r0, c0, grid):
     return unary_union(boxes)
 
 
-def patches(grid, gap, lab, nlab, tris, kind, layer, src, rid, extend):
-    """[(kind, layer, src asset or -1: photo ground, vertices (n,3), faces (m,3))] closing every gap."""
+def _cell_polys(masks, r0, c0, grid, straighten):
+    """{key: polygon in metres} of the True cells of each mask; with straighten, the lines where two masks meet are
+    simplified together (a coverage in whole cells, so the pieces still meet exactly) instead of the cell staircase."""
+    keys, polys = list(masks), []
+    for k in keys:
+        boxes = []
+        m = masks[k]
+        for r in range(m.shape[0]):
+            d = np.diff(np.concatenate([[0], m[r].astype(np.int8), [0]]))
+            for a, b in zip(np.nonzero(d == 1)[0], np.nonzero(d == -1)[0]):
+                boxes.append(box(int(a), r, int(b), r + 1))
+        polys.append(shapely.segmentize(unary_union(boxes), 1.0) if boxes else Polygon())
+    if straighten and len(keys) > 1:
+        try:
+            arr = np.array(polys, dtype=object)
+            if shapely.coverage_is_valid(arr):
+                polys = list(shapely.coverage_simplify(arr, STRAIGHT, simplify_boundary=False))
+        except Exception:      # an odd coverage keeps the cell outline
+            pass
+    tr = [RES, 0, 0, RES, grid.x0 + c0 * RES, grid.y0 + r0 * RES]
+    return {k: affine_transform(p, tr) for k, p in zip(keys, polys)}
+
+
+def _lines(g):
+    if g.is_empty:
+        return []
+    if g.geom_type == "LineString":
+        return [g]
+    out = []
+    for p in getattr(g, "geoms", []):
+        out += _lines(p)
+    return out
+
+
+def _wall(line, z_hi, z_lo, upper):
+    """Kerb faces along ``line``: [(v, f, st, normals)] for the stretches where z_hi(x, y) - z_lo(x, y) > RISE, from
+    RISER_FOOT under z_lo up to z_hi, looking away from the polygon ``upper`` (the higher surface)."""
+    out = []
+    for ln in _lines(line):
+        ln = ln.segmentize(0.5)
+        xy = np.asarray(ln.coords)[:, :2]
+        if len(xy) < 2 or ln.length < 0.05:
+            continue
+        top = np.array([z_hi(x, y) for x, y in xy])
+        bot = np.array([z_lo(x, y) for x, y in xy])
+        tall = (top - bot) > RISE
+        for j in range(len(xy) - 1):
+            if not (tall[j] or tall[j + 1]):
+                continue
+            a, b = xy[j], xy[j + 1]
+            d = b - a
+            n = float(np.hypot(*d))
+            if n < 1e-4:
+                continue
+            nrm = np.array([d[1], -d[0]]) / n
+            if upper.contains(shapely.Point(*(0.5 * (a + b) + 0.03 * nrm))):
+                nrm = -nrm
+            zt = [max(top[j], bot[j] + RISE), max(top[j + 1], bot[j + 1] + RISE)]
+            zb = [bot[j] - RISER_FOOT, bot[j + 1] - RISER_FOOT]
+            v = np.array([[a[0], a[1], zb[0]], [b[0], b[1], zb[1]], [b[0], b[1], zt[1]], [a[0], a[1], zt[0]]])
+            f = np.array([[0, 1, 2], [0, 2, 3]])
+            if np.dot(np.cross(v[1] - v[0], v[2] - v[0])[:2], nrm) < 0:
+                f = f[:, [0, 2, 1]]
+            st = np.array([[0.0, zt[0], zb[0]], [n, zt[1], zb[1]], [n, zt[1], zt[1]], [0.0, zt[0], zt[0]]])
+            out.append((v, f, st, np.tile([nrm[0], nrm[1], 0.0], (4, 1))))
+    return out
+
+
+def _mesh_z(pieces):
+    """z(x, y) on a patch's own triangles (points on its edge lie on one)."""
+    tri = [v[f] for v, f in pieces for f in f]
+    if not tri:
+        return None
+    tree = STRtree([Polygon(t[:, :2]) for t in tri])
+
+    def z(x, y):
+        t = tri[int(np.asarray(tree.query_nearest(shapely.Point(x, y))).ravel()[0])]
+        a, b, c = t
+        nrm = np.cross(b - a, c - a)
+        if abs(nrm[2]) < 1e-12:
+            return float(t[:, 2].mean())
+        return float(a[2] - (nrm[0] * (x - a[0]) + nrm[1] * (y - a[1])) / nrm[2])
+    return z
+
+
+def patches(grid, gap, lab, nlab, tris, kind, layer, src, rid, extend, cid=None):
+    """[(kind, layer, src asset or -1: photo ground, vertices (n,3), faces (m,3)[, (st, normals): a kerb face])]
+    closing every gap."""
     out = []
     pad = int(REACH / RES) + 3
     for i, sl in enumerate(ndimage.find_objects(lab), 1):
@@ -237,41 +339,128 @@ def patches(grid, gap, lab, nlab, tris, kind, layer, src, rid, extend):
         _, (ir, ic) = ndimage.distance_transform_edt(win == 0, return_indices=True)
         near_id = win[ir, ic] - 1
         nk = kind[near_id] if extend[i] else np.full(near_id.shape, -1)
-        for k in np.unique(nk[cells]):
-            mk = cells & (nk == k)
-            if mk.sum() * RES * RES < MIN_M2:
-                continue
-            # nearest triangle of THIS kind (photo ground: of any road or pavement), for the vertex heights
+        ks = [int(k) for k in np.unique(nk[cells]) if (cells & (nk == k)).sum() * RES * RES >= MIN_M2]
+        look = {}
+        for k in ks:
+            # nearest triangle of THIS kind (photo ground: of any road or pavement), for the vertex heights, looked up
+            # from the patch's own nearest cell (a cell outside it can pick a far sloping triangle: 0.4 m jumps)
             kwin = np.where((win > 0) & (kind[np.maximum(win - 1, 0)] == k), win, 0) if k >= 0 else win
             if k >= 0:
                 _, (kr, kc) = ndimage.distance_transform_edt(kwin == 0, return_indices=True)
             else:
                 kr, kc = ir, ic
-            poly = _mask_poly(mk, r0, c0, grid).buffer(OVERLAP, join_style=2).simplify(0.02)
-            for p in _polys(poly):
-                if p.area < MIN_M2:
+            _, (mr, mc) = ndimage.distance_transform_edt(~(cells & (nk == k)), return_indices=True)
+            look[k] = (kwin, kr, kc, mr, mc)
+
+        def tri_at(k, x, y):
+            kwin, kr, kc, mr, mc = look[k]
+            rr = np.clip(np.round((np.asarray(y) - grid.y0) / RES - 0.5).astype(int) - r0, 0, win.shape[0] - 1)
+            cc = np.clip(np.round((np.asarray(x) - grid.x0) / RES - 0.5).astype(int) - c0, 0, win.shape[1] - 1)
+            rr, cc = mr[rr, cc], mc[rr, cc]
+            return kwin[kr[rr, cc], kc[rr, cc]] - 1
+
+        def patch_z(k):
+            return lambda x, y: _plane_z(tris[tri_at(k, x, y)], x, y) - SINK
+
+        region = _cell_polys({k: cells & (nk == k) for k in ks}, r0, c0, grid, straighten=bool(extend[i]))
+        bpoly = {k: region[k].buffer(OVERLAP, join_style=2) for k in ks}
+        # what covers the ground around the gap: lower surfaces are not covered, higher ones get a kerb face down to
+        # the patch, edges on nothing a skirt
+        cwin = cid[r0:r1, c0:c1] if cid is not None else win
+        ids = np.unique(cwin[cwin > 0]) - 1
+        if len(ids):
+            nrm = np.cross(tris[ids, 1] - tris[ids, 0], tris[ids, 2] - tris[ids, 0])
+            ids = ids[np.abs(nrm[:, 2]) >= STEEP_NZ * np.linalg.norm(nrm, axis=1)]
+        tpoly = [Polygon(tris[t][:, :2]) for t in ids]
+        tree = STRtree(tpoly) if tpoly else None
+
+        def tri_z(sub):
+            sub_tree = STRtree([tpoly[q] for q in sub])
+
+            def z(x, y):
+                j = sub[int(np.asarray(sub_tree.query_nearest(shapely.Point(x, y))).ravel()[0])]
+                return _plane_z(tris[ids[j]], x, y)
+            return z
+
+        def union_of(qs, pad_m=0.0):
+            g = unary_union([tpoly[q] for q in qs]) if qs else Polygon()
+            return g.buffer(pad_m, join_style=2) if pad_m and not g.is_empty else g
+
+        # pass 1: each patch's outline (stopping at lower surfaces and lower patches) and its triangles
+        plan = {}
+        for k in ks:
+            zk = patch_z(k)
+            lower, higher, level = [], [], []
+            for q in ([int(q) for q in tree.query(bpoly[k].buffer(0.01))] if tree is not None else []):
+                # the step where the two meet (a large sloping triangle's mean height says little)
+                pa, _ = shapely.ops.nearest_points(tpoly[q], region[k])
+                d = _plane_z(tris[ids[q]], pa.x, pa.y) - zk(pa.x, pa.y)
+                (lower if d < -RISE else higher if d > RISE else level).append(q)
+            lowk = []
+            for k2 in ks:
+                if k2 == k or region[k2].distance(region[k]) > 0.01:
                     continue
-                p = orient(p.segmentize(0.6))
-                rings = [np.asarray(p.exterior.coords)[:-1]] + [np.asarray(h.coords)[:-1] for h in p.interiors]
+                edge = region[k2].boundary.intersection(region[k].buffer(0.002))
+                px, py = (edge if not edge.is_empty else region[k2]).representative_point().coords[0]
+                if patch_z(k2)(px, py) < zk(px, py) - RISE:
+                    lowk.append(k2)
+            poly = bpoly[k].difference(unary_union([union_of(lower)] + [bpoly[k2] for k2 in lowk]))
+            pieces = []
+            for pp in _polys(poly.simplify(0.02)):
+                if pp.area < MIN_M2:
+                    continue
+                pp = orient(pp.segmentize(0.6))
+                rings = [np.asarray(pp.exterior.coords)[:-1]] + [np.asarray(h.coords)[:-1] for h in pp.interiors]
                 xy = np.concatenate(rings)
                 ends = np.cumsum([len(r) for r in rings]).astype(np.uint32)
                 faces = np.asarray(earcut.triangulate_float64(xy, ends), np.int64).reshape(-1, 3)
                 if not len(faces):
                     continue
-                rr = np.clip(((xy[:, 1] - grid.y0) / RES - 0.5).round().astype(int) - r0, 0, win.shape[0] - 1)
-                cc = np.clip(((xy[:, 0] - grid.x0) / RES - 0.5).round().astype(int) - c0, 0, win.shape[1] - 1)
-                tid = kwin[kr[rr, cc], kc[rr, cc]] - 1
+                tid = tri_at(k, xy[:, 0], xy[:, 1])
                 z = np.array([_plane_z(tris[t], x, y) for t, (x, y) in zip(tid, xy)]) - SINK
                 v = np.column_stack([xy, z])
                 # counter-clockwise from above: normals up
                 e1, e2 = v[faces[:, 1]] - v[faces[:, 0]], v[faces[:, 2]] - v[faces[:, 0]]
                 flip = np.cross(e1, e2)[:, 2] < 0
                 faces[flip] = faces[flip][:, [0, 2, 1]]
-                t0 = int(np.bincount(tid).argmax())
+                pieces.append((v, faces, int(np.bincount(tid).argmax())))
+            plan[k] = (poly, pieces, lower, higher, level, lowk)
+        # pass 2: the kerb faces, their tops and feet on the patches' own triangles
+        mz = {k: _mesh_z([(v, f) for v, f, _ in plan[k][1]]) for k in ks}
+        for k in ks:
+            poly, pieces, lower, higher, level, lowk = plan[k]
+            for v, faces, t0 in pieces:
                 if k >= 0:
                     out.append((COVER[k], int(layer[t0]), int(src[t0]), v, faces))
                 else:
                     out.append(("ground", int(layer[t0]), -1, v, faces))
+            zk = mz[k]
+            if zk is None:
+                continue
+            walls = []
+            own = union_of(higher + level, 0.01)        # edges between two of the export's surfaces have faces
+            if lower:
+                low = union_of(lower)
+                walls += _wall(poly.boundary.intersection(low.buffer(0.002, join_style=2)).difference(own),
+                               zk, tri_z(lower), poly)
+            for k2 in lowk:
+                if mz[k2] is None:
+                    continue
+                line = poly.boundary.intersection(bpoly[k2].buffer(0.002, join_style=2))
+                if lower:
+                    line = line.difference(union_of(lower, 0.002))
+                walls += _wall(line.difference(own), zk, mz[k2], poly)
+            if higher:
+                hi = union_of(higher)
+                walls += _wall(hi.boundary.intersection(poly).difference(union_of(lower + level, 0.01)),
+                               tri_z(higher), zk, hi)
+            held = unary_union([union_of(lower + higher + level)] + [bpoly[k2] for k2 in ks if k2 != k])
+            free = poly.boundary.difference(held.buffer(0.01, join_style=2)) if not held.is_empty else poly.boundary
+            walls += _wall(free, zk, lambda x, y: zk(x, y) - SKIRT + RISER_FOOT, poly)
+            if walls:
+                t0 = pieces[0][2] if pieces else 0
+                for v, f, st, nrm in walls:
+                    out.append(("riser", int(layer[t0]), -2, v, f, (st, nrm)))
     return out
 
 
@@ -297,12 +486,29 @@ def remove(ue: Path, man: dict) -> int:
 def _write(ue: Path, man: dict, pts, made: list):
     """New assets for the patches, grouped by (kind, layer, tile, neighbouring asset)."""
     groups = {}
-    for k, ly, s, v, f in pts:
+    for k, ly, s, v, f, *extra in pts:
         c = v.mean(axis=0)
         tile = tuple(_tile_index(float(c[0]), float(c[1]), man["tile_m"]))
-        groups.setdefault((k, ly, tile, s), []).append((v, f))
+        groups.setdefault((k, ly, tile, s), []).append((v, f, extra[0] if extra else None))
     name, new = man["name"], []
     for (k, ly, tile, s), parts in sorted(groups.items()):
+        if s == -2:     # kerb faces: the export's riser material, (along, height) UVs on the curb texture band
+            vs, fs, uvs, ns, off = [], [], [], [], 0
+            for v, f, (st, nrm) in parts:
+                vs.append(v)
+                fs.append(f + off)
+                off += len(v)
+                uvs.append([_curb_band_uv(a, zt, z) for (a, zt, _), z in zip(st, v[:, 2])])
+                ns.append(nrm)
+            v, f = np.concatenate(vs), np.concatenate(fs)
+            asset = f"{name}_gap_{k}_{tile[0]}_{tile[1]}_{len(made) + len(new)}".replace("-", "m")
+            rel = f"meshes/gaps/{asset}.glb"
+            (ue / rel).parent.mkdir(parents=True, exist_ok=True)
+            bbox = write_glb(ue / rel, asset, v, np.concatenate(ns), np.array(np.concatenate(uvs), float), f, "riser")
+            new.append(dict(material="riser", semantic="SideWalk", kind=k, file=rel, asset=asset, layer=ly,
+                            tile=list(tile), vertices=int(len(v)), triangles=int(len(f)), bbox_ue=bbox,
+                            gap_fill=True, provenance=PROVENANCE))
+            continue
         if s < 0:       # photo ground: the tile's ground (or ground plane) asset, for its photo and UVs
             cand = [a for a in man["assets"] if a["kind"] in ("ground", "groundplane") and list(a["tile"]) == list(tile)
                     and not a.get("gap_fill")]
@@ -316,7 +522,7 @@ def _write(ue: Path, man: dict, pts, made: list):
         sv = gltf_to_model(g["positions"].astype(float))
         coef = _fit_uv(sv, g["uvs"].astype(float))
         vs, fs, off = [], [], 0
-        for v, f in parts:
+        for v, f, _ in parts:
             vs.append(v)
             fs.append(f + off)
             off += len(v)
@@ -336,7 +542,7 @@ def _write(ue: Path, man: dict, pts, made: list):
 
 
 def _area(pts, area):
-    for k, ly, s, v, f in pts:
+    for k, ly, s, v, f, *_ in pts:
         e1, e2 = v[f[:, 1]] - v[f[:, 0]], v[f[:, 2]] - v[f[:, 0]]
         area[k] = area.get(k, 0.0) + float(0.5 * np.linalg.norm(np.cross(e1, e2), axis=1).sum())
 
@@ -351,7 +557,7 @@ def apply(ue: Path, report_only=False, png: Path | None = None, passes=4, log=pr
         return {"gaps": 0, "gap_m2": 0.0, "patched_m2": {}, "removed_old": removed, "note": "no surfaces"}
     made, area, rep, first, grid = [], {}, {"removed_old": removed}, None, None
     for k in range(1 if report_only else passes):
-        grid, gap, lab, nlab, tris, kind, layer, src, rid, extend = find(ue, man, fills=report_only or k > 0,
+        grid, gap, lab, nlab, tris, kind, layer, src, rid, extend, cid = find(ue, man, fills=report_only or k > 0,
                                                                          within=first, grid=grid if k else None)
         if k == 0:
             first = gap.copy()
@@ -371,7 +577,7 @@ def apply(ue: Path, report_only=False, png: Path | None = None, passes=4, log=pr
             rep["left"], rep["left_max_m2"] = int(nlab), round(float(np.max(sizes)), 2)
         if not nlab or k == passes - 1 and k > 0:
             break
-        pts = patches(grid, gap, lab, nlab, tris, kind, layer, src, rid, extend)
+        pts = patches(grid, gap, lab, nlab, tris, kind, layer, src, rid, extend, cid)
         _area(pts, area)
         _write(ue, man, pts, made)
         rep[f"pass{k + 1}"] = int(nlab)

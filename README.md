@@ -123,8 +123,13 @@ meshes):
   (same kind, on the plane of the nearest triangle: kerbs stay kerbs); a wider strip between different surfaces
   gets the aerial-photo ground at their height. A neighbour steeper than 60 degrees (a kerb face, a step riser) gives
   its top edge instead of its plane, and no patch point lies more than 0.4 m above or below the triangle it extends,
-  so a patch can never dive under the street. TUeCampus: 463 gaps (527 m2); EhvCentre: 2,429 (3,632 m2); the other
-  twins 344 (Salamanca) to 2,338 (Shibuya).
+  so a patch can never dive under the street. A patch is a closed plate like the export's own: it stops at the edge
+  of a lower surface instead of reaching over it, every step of more than 3 cm between a patch and its neighbour
+  gets a kerb face (the riser material), an edge on nothing gets a skirt down under the ground plane, and two kinds
+  of patch in one gap meet on a straightened line, not on the 0.2 m cell staircase (open 15 cm staircase risers
+  showed black on the De Zaale kerbs where a footpath crosses the cycle path). Patches reach 15 cm under the
+  surfaces they meet, so no crack is left where a surface's edge falls inside a cell. TUeCampus: 463 gaps
+  (527 m2); EhvCentre: 2,429 (3,632 m2); the other twins 344 (Salamanca) to 2,338 (Shibuya).
 - **paving** (`tools/road_paving.py`): brick and sett streets (OSM `surface`) paved in the road surface itself
   (herringbone clinkers in the Netherlands, grey pavers elsewhere, setts), no overlay slabs.
 
