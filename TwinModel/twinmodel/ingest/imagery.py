@@ -37,6 +37,13 @@ Providers (names understood by ``profiles.DataSources.ortho``):
   ``ch.swisstopo.swissimage`` (JPEG, EPSG:2056).
 * ``flanders`` — Digitaal Vlaanderen orthophoto mosaic (OMW, 25 cm, Modellicentie Gratis Hergebruik),
   ``https://geo.api.vlaanderen.be/omw/wms`` layers ``OMWRGB25VL`` (newest first; EPSG:31370). Flanders only.
+* ``helsinki_ortho`` — City of Helsinki orthophoto, the newest flight (5 cm, CC BY 4.0, keyless), GeoServer WMS
+  ``https://kartta.hel.fi/ws/geoserver/avoindata/wms`` layer ``avoindata:Ortoilmakuva`` (JPEG, EPSG:3067).
+  Helsinki only; listed before the national photo there.
+* ``mml_ortho`` — National Land Survey of Finland (Maanmittauslaitos) orthophoto, all of Finland (0.5 m open
+  product, CC BY 4.0), through the keyless WMS mirror of MML's open data run by Kapsi Internet-kayttajat ry,
+  ``https://tiles.kartat.kapsi.fi/ortokuva`` layer ``ortokuva`` (JPEG, EPSG:3067). MML's own open WMTS needs an
+  API key (HTTP 401 without one), so the mirror is used; it asks to be used gently: one request at a time.
 * ``gsi_photo`` — GSI Japan seamless photo tiles z18 (GSI terms, compatible with CC BY 4.0),
   ``https://cyberjapandata.gsi.go.jp/xyz/seamlessphoto/{z}/{x}/{y}.jpg``.
 * ``osm_tiles`` — openstreetmap-carto z19 tiles (``osmtiles.fetch_osm_tiles``), a last-resort
@@ -248,6 +255,14 @@ FLANDERS_WMS = "https://geo.api.vlaanderen.be/omw/wms"
 FLANDERS_LAYERS = ("OMWRGB25VL", "OMWRGB24VL", "OMWRGB23VL")   # winter flights, newest first
 FLANDERS_CRS = "EPSG:31370"
 FLANDERS_RES = 0.25
+HEL_WMS = "https://kartta.hel.fi/ws/geoserver/avoindata/wms"
+HEL_LAYERS = ("avoindata:Ortoilmakuva",)   # the newest city flight (5 cm)
+HEL_CRS = "EPSG:3067"
+HEL_RES = 0.05
+MML_WMS = "https://tiles.kartat.kapsi.fi/ortokuva"    # keyless mirror of MML's open orthophoto (CC BY 4.0)
+MML_LAYER = "ortokuva"
+MML_CRS = "EPSG:3067"
+MML_RES = 0.5
 GSI_PHOTO_URL = "https://cyberjapandata.gsi.go.jp/xyz/seamlessphoto/{z}/{x}/{y}.jpg"
 GSI_PHOTO_ZOOM = 18
 UA_HEADERS = {"User-Agent": "twinmodel (carla-digitaltwins)"}
@@ -530,6 +545,10 @@ _fetch_ign_fr = _wms_jpeg_provider("ign_fr", IGN_FR_WMS, IGN_FR_LAYER, IGN_FR_CR
                                    "IGN BD ORTHO WMS-R")
 _fetch_swissimage = _wms_jpeg_provider("swissimage", SWISS_WMS, SWISS_LAYER, SWISS_CRS, SWISS_RES,
                                        "swisstopo SWISSIMAGE WMS")
+_fetch_helsinki = _wms_jpeg_provider("helsinki_ortho", HEL_WMS, HEL_LAYERS, HEL_CRS, HEL_RES,
+                                     "City of Helsinki orthophoto WMS")
+_fetch_mml = _wms_jpeg_provider("mml_ortho", MML_WMS, MML_LAYER, MML_CRS, MML_RES,
+                                "MML orthophoto (kartat.kapsi.fi WMS mirror)")
 _fetch_flanders = _wms_jpeg_provider("flanders", FLANDERS_WMS, FLANDERS_LAYERS, FLANDERS_CRS, FLANDERS_RES,
                                      "Digitaal Vlaanderen OMW WMS")
 
@@ -623,6 +642,8 @@ PROVIDERS = {
     "swissimage": _fetch_swissimage,
     "flanders": _fetch_flanders,
     "gsi_photo": _fetch_gsi_photo,
+    "helsinki_ortho": _fetch_helsinki,
+    "mml_ortho": _fetch_mml,
     "osm_tiles": _fetch_osm_tiles,
 }
 # providers whose own module caches the result (skip the imagery-level cache for them)

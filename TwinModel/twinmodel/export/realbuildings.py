@@ -42,6 +42,8 @@ ORTHO_CREDITS = {
     "swissimage": "swisstopo SWISSIMAGE (swisstopo open data)",
     "flanders": "Digitaal Vlaanderen orthophoto (Modellicentie Gratis Hergebruik)",
     "gsi_photo": "GSI Japan seamless photo (GSI terms, CC BY 4.0 compatible)",
+    "helsinki_ortho": "City of Helsinki orthophoto (CC BY 4.0)",
+    "mml_ortho": "National Land Survey of Finland orthophoto (CC BY 4.0)",
 }
 
 
@@ -185,22 +187,52 @@ PHOTO_SOURCES_EXCLUDED = ("osm_tiles",)    # a rendered map, not a photo: never 
 
 def fetch_twin_ortho(build_dir: Path, man: dict):
     """(path, provider) of the twin's aerial photo fetched again when its build's cache is not at hand (an export
-    copied to another machine): the providers of the twin's profile (twinmodel.ingest.imagery, e.g. NYS orthos then
-    NAIP in the US) into <build_dir>/data, where find_ortho looks. (None, None) when none answers."""
+    copied to another machine): the providers of the twin's country that cover it (twinmodel.regions: e.g. NYS
+    orthos then NAIP in the US, Helsinki's city photo then MML's in Finland), else of its street profile, into
+    <build_dir>/data, where find_ortho looks. (None, None) when none answers."""
     from ..frame import LocalFrame
     from .. import profiles
     from ..ingest.imagery import fetch_ortho
-    name = (man.get("profile") or {}).get("name") if isinstance(man.get("profile"), dict) else man.get("profile")
-    prof = profiles.by_name(name) if name in profiles.PROFILES else profiles.get()
-    sources = [x for x in prof.sources.ortho if x not in PHOTO_SOURCES_EXCLUDED]
+    from .. import regions
+    bbox = tuple(man["bbox_wgs84"])
+    iso2 = twin_iso2(Path(build_dir), man)
+    if iso2:            # the country's providers that cover the twin (twinmodel.regions), as the build chose them
+        sources = list(regions.plan_for(iso2, bbox).ortho)
+    else:               # unknown country: the street profile's providers
+        name = (man.get("profile") or {}).get("name") if isinstance(man.get("profile"), dict) else man.get("profile")
+        prof = profiles.by_name(name) if name in profiles.PROFILES else profiles.get()
+        sources = list(prof.sources.ortho)
+    sources = [x for x in sources if x not in PHOTO_SOURCES_EXCLUDED]
     if not sources:
         return None, None
     o = man["origin"]
-    bbox = tuple(man["bbox_wgs84"])
     img = fetch_ortho(LocalFrame(o["lat"], o["lon"]), bbox, cache_dir=Path(build_dir) / "data", sources=sources)
     if img is None:
         return None, None
     return find_ortho(Path(build_dir), bbox), img.source
+
+
+def twin_iso2(build_dir: Path, man: dict):
+    """ISO alpha-2 of a twin: the manifest's or report.json's profile record, else the country under its bbox
+    (OpenStreetMap, cached in <build_dir>/data), else None."""
+    import json
+    for rec in (man.get("profile"), man.get("country")):
+        if isinstance(rec, dict) and rec.get("iso2"):
+            return rec["iso2"]
+        if isinstance(rec, str) and len(rec) == 2:
+            return rec.upper()
+    try:
+        rep = json.loads((Path(build_dir) / "report.json").read_text())
+        iso = (rep.get("profile") or (rep.get("build") or {}).get("profile") or {}).get("iso2")
+        if iso:
+            return iso
+    except Exception:  # noqa: BLE001 - an export copied away from its build has no report
+        pass
+    try:
+        from ..ingest.osm import country_for_bbox
+        return country_for_bbox(tuple(man["bbox_wgs84"]), cache_dir=Path(build_dir) / "data")
+    except Exception:  # noqa: BLE001 - offline: the profile's providers
+        return None
 
 
 def load_ortho(path: Path, proj: str):

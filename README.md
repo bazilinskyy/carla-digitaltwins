@@ -83,8 +83,10 @@ like the 3DBAG roofs; roads, sidewalks, kerbs and markings keep CARLA's material
 objects standing more than 2 m above the terrain (AHN 0.5 m surface minus terrain model, CC0) are replaced by
 the visible ground around them, since the scenery places the trees in 3D, and cast shadows are brightened.
 Outside the Netherlands the twin's cached ortho is used, without the object fill; an export without its build's
-cache (copied to another machine) fetches it again from the profile's providers into `<build>/data` (e.g. NYS
-orthos, then NAIP in the US; never the rendered map tiles). `--verges` also puts the photo on lawns and verges
+cache (copied to another machine) fetches it again from its country's providers (`twinmodel.regions`; the country
+from the build's report, else OpenStreetMap) into `<build>/data` (e.g. NYS orthos, then NAIP in the US; Helsinki's
+city photo, then MML's in Finland; never the rendered map tiles), and adds the provider to the level's
+`ATTRIBUTION.md`. `--verges` also puts the photo on lawns and verges
 (kind `verge`, which keep CARLA's grass otherwise; NycMidtown has 33):
 
 ```sh
@@ -170,6 +172,7 @@ which can be baked later on a machine that has one. Paths can also come from `TW
 | BE | Digitaal Vlaanderen orthophoto 25 cm, Flanders only (Modellicentie Gratis Hergebruik) | global | Overture |
 | CH | swisstopo SWISSIMAGE 10 cm | swisstopo swissALTI3D 0.5 m | Overture |
 | US | NYS orthos 15 cm in New York State, else USDA NAIP 60 cm (public domain) | USGS 3DEP 1 m (public domain) | NYC 3D model in NYC, else Overture |
+| FI | City of Helsinki 5 cm in Helsinki, else the National Land Survey (MML) 0.5 m through the keyless kartat.kapsi.fi mirror (CC BY 4.0; MML's own service needs a key) | global | Overture |
 | JP | GSI seamless photo (GSI terms, CC BY 4.0 compatible) | GSI DEM 5 m | PLATEAU LoD 2 with its own photo textures (listed wards), else Overture |
 | elsewhere | none: CARLA's ground materials, plain roofs | AWS Terrain Tiles, Copernicus GLO-30 | Overture Maps (ODbL / CDLA Permissive 2.0), else OSM |
 

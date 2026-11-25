@@ -155,8 +155,61 @@ def test_an_export_without_its_build_cache_fetches_the_profiles_photo(tmp_path, 
         (Path(cache_dir) / "ortho_40.74861_-73.99230_40.76119_-73.97570_0.25m_abcd1234.tif").write_bytes(b"tif")
         return type("Img", (), {"source": "nys_orthos"})()
     monkeypatch.setattr(imagery, "fetch_ortho", fake_fetch)
+    monkeypatch.setattr(realbuildings, "twin_iso2", lambda build, man: None)    # offline: the profile's providers
     path, src = realbuildings.fetch_twin_ortho(tmp_path, man)
     assert src == "nys_orthos" and path is not None and path.parent == tmp_path / "data"
     assert "osm_tiles" not in asked["sources"] and asked["sources"][0] == "nys_orthos"
     assert realbuildings.ORTHO_CREDITS[src] == "NYS ITS orthoimagery (public domain)"
     assert realbuildings.find_ortho(tmp_path, man["bbox_wgs84"]) == path      # found as the build's own next time
+
+
+def test_a_finnish_twin_takes_helsinkis_photo_then_mmls(tmp_path, monkeypatch):
+    # HelsinkiSenate, 2026-11-25: the twin's ground had no photo (no Finnish provider; its street profile eu_dense
+    # lists Spain's). The country's providers that cover the twin are asked: Helsinki's 5 cm city photo, then the
+    # National Land Survey's 0.5 m one (keyless mirror); elsewhere in Finland only the national one.
+    from twinmodel import regions
+    from twinmodel.export import realbuildings
+    from twinmodel.ingest import imagery
+    hel = [60.16451, 24.93897, 60.17349, 24.95703]
+    assert regions.plan_for("FI", hel).ortho == ("helsinki_ortho", "mml_ortho", "osm_tiles")
+    assert regions.plan_for("FI", [61.49, 23.74, 61.51, 23.79]).ortho == ("mml_ortho", "osm_tiles")    # Tampere
+    for p in ("helsinki_ortho", "mml_ortho"):
+        assert p in imagery.PROVIDERS and p in regions.SOURCES and "CC BY 4.0" in realbuildings.ORTHO_CREDITS[p]
+    man = {"profile": "eu_dense", "origin": {"lat": 60.169, "lon": 24.948}, "bbox_wgs84": hel}
+    asked = {}
+
+    def fake_fetch(frame, bbox, cache_dir, sources, **kw):
+        asked["sources"] = list(sources)
+        return None
+    monkeypatch.setattr(imagery, "fetch_ortho", fake_fetch)
+    monkeypatch.setattr(realbuildings, "twin_iso2", lambda build, man: "FI")
+    assert realbuildings.fetch_twin_ortho(tmp_path, man) == (None, None)
+    assert asked["sources"] == ["helsinki_ortho", "mml_ortho"]
+
+
+def test_twin_iso2_reads_the_report_before_asking_the_map(tmp_path, monkeypatch):
+    import json
+    from twinmodel.export import realbuildings
+    from twinmodel.ingest import osm
+    monkeypatch.setattr(osm, "country_for_bbox", lambda *a, **k: "FI")
+    man = {"bbox_wgs84": [60.16, 24.93, 60.17, 24.95]}
+    assert realbuildings.twin_iso2(tmp_path, man) == "FI"                   # no report: the map's answer
+    (tmp_path / "report.json").write_text(json.dumps({"profile": {"iso2": "EE"}}))
+    assert realbuildings.twin_iso2(tmp_path, man) == "EE"
+    assert realbuildings.twin_iso2(tmp_path, dict(man, profile={"name": "eu_dense", "iso2": "SE"})) == "SE"
+
+
+def test_a_fetched_photo_is_credited_in_the_levels_attribution(tmp_path):
+    # the build wrote ATTRIBUTION.md before the photo was fetched: its provider (CC BY 4.0) must be listed
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("gp", Path(__file__).parent.parent / "tools" / "ground_photo.py")
+    gp = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gp)
+    att = tmp_path / "ATTRIBUTION.md"
+    att.write_text("# X: data sources\n\nCredit:\n\n- OpenStreetMap contributors. Licence: ODbL 1.0.\n\nBuildings: x\n")
+    added = gp.credit_photo(tmp_path, ["helsinki_ortho", "osm_tiles_unknown"])
+    assert len(added) == 1 and "City of Helsinki" in added[0] and "CC BY 4.0" in added[0]
+    lines = att.read_text().splitlines()
+    assert lines.index(added[0]) == lines.index("- OpenStreetMap contributors. Licence: ODbL 1.0.") + 1
+    assert gp.credit_photo(tmp_path, ["helsinki_ortho"]) == []          # once only
+

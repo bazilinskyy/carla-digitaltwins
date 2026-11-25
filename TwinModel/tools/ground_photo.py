@@ -271,6 +271,32 @@ def apply(man, out_dir: Path, textured: dict, tile_m: float, kinds=KINDS):
     return n_tex
 
 
+def credit_photo(out: Path, providers) -> list:
+    """Lists each photo provider (twinmodel.regions.SOURCES) in the level's ATTRIBUTION.md, after its other sources,
+    when it is not there yet: a photo fetched here (HelsinkiSenate, 2026-11-25: City of Helsinki, CC BY 4.0) was not
+    in the file the build wrote. Returns the lines added."""
+    from twinmodel import regions
+    path = Path(out) / "ATTRIBUTION.md"
+    if not path.exists():
+        return []
+    text = path.read_text()
+    lines = text.splitlines()
+    added = []
+    for p in providers:
+        if p not in regions.SOURCES:
+            continue
+        what, lic, url = regions.SOURCES[p]
+        line = f"- {what}. Licence: {lic}. {url}"
+        if what in text:
+            continue
+        last = max((i for i, ln in enumerate(lines) if ln.startswith("- ")), default=len(lines) - 1)
+        lines.insert(last + 1, line)
+        added.append(line)
+    if added:
+        path.write_text("\n".join(lines) + "\n")
+    return added
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("build_dir")
@@ -391,6 +417,8 @@ def main(argv=None):
                   ([ortho_credit()] if sources.get("ortho") else []) +
                   ([AHN_CREDIT] if ndsm_ok else [])}
     (out / "manifest.json").write_text(json.dumps(man, indent=1))
+    credit_photo(out, (["pdok_luchtfoto"] if sources.get("pdok") else []) +
+                 ([fetched["source"]] if sources.get("ortho") and fetched.get("source") else []))
     cache.mkdir(parents=True, exist_ok=True)   # outside the Netherlands nothing was fetched into it
     (cache / "report.json").write_text(json.dumps({**man["stats"]["ground_photo"], "per_tile": per_tile}, indent=1))
     if args.preview and textured:

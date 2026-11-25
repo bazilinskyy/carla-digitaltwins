@@ -22,6 +22,7 @@ manifest into the ATTRIBUTION file that travels with the baked level (bake_level
 | CH | swisstopo SWISSIMAGE 10 cm | swisstopo swissALTI3D 0.5 m | Overture |
 | US | NYS orthos 15 cm (New York State), USGS NAIP 60 cm | USGS 3DEP 1 m | NYC 3D model (NYC), Overture |
 | JP | GSI seamless photo | GSI DEM 5 m | PLATEAU (listed wards), Overture |
+| FI | City of Helsinki 5 cm (Helsinki), MML 0.5 m (Kapsi mirror) | global | Overture |
 | elsewhere | none (CARLA's ground) | AWS Terrain Tiles, Copernicus GLO-30 | Overture, else OSM |
 """
 from __future__ import annotations
@@ -59,6 +60,8 @@ COVERAGE = {
     "naip": [(24.4, -125.0, 49.5, -66.9)],
     "usgs_3dep": [(24.4, -125.0, 49.5, -66.9), (51.0, -180.0, 72.0, -129.0), (18.8, -160.5, 22.3, -154.7)],
     "nys_orthos": [(40.49, -79.77, 45.02, -71.85)],
+    "helsinki_ortho": [(60.08, 24.78, 60.30, 25.27)],     # the city of Helsinki, islands included
+    "mml_ortho": [(59.45, 19.0, 70.10, 31.60)],           # Finland
 }
 
 
@@ -99,6 +102,7 @@ COUNTRIES = {
     "CH": (("swissimage", "osm_tiles"), ("swissalti3d",) + GLOBAL_DEM, GLOBAL_BUILDINGS, "eu"),
     "US": (("nys_orthos", "naip", "osm_tiles"), ("usgs_3dep",) + GLOBAL_DEM, ("nyc3d",) + GLOBAL_BUILDINGS, "us"),
     "CA": (("osm_tiles",), GLOBAL_DEM, GLOBAL_BUILDINGS, "us"),
+    "FI": (("helsinki_ortho", "mml_ortho", "osm_tiles"), GLOBAL_DEM, GLOBAL_BUILDINGS, "eu"),
     "JP": (("gsi_photo", "osm_tiles"), ("gsi_dem",) + GLOBAL_DEM, ("plateau",) + GLOBAL_BUILDINGS, "jp"),
 }
 
@@ -144,6 +148,10 @@ SOURCES = {
     "nys_orthos": ("NYS ITS Geospatial Services orthoimagery", "public domain", "https://orthos.its.ny.gov"),
     "gsi_photo": ("GSI Japan seamless photo tiles (Chiriin tiles)", "GSI terms of use (compatible with CC BY 4.0)",
                   "https://maps.gsi.go.jp/development/ichiran.html"),
+    "helsinki_ortho": ("City of Helsinki orthophoto (Helsingin kaupunki, kartta.hel.fi)", "CC BY 4.0",
+                       "https://kartta.hel.fi"),
+    "mml_ortho": ("National Land Survey of Finland orthophoto (Maanmittauslaitos), via the kartat.kapsi.fi mirror",
+                  "CC BY 4.0", "https://www.maanmittauslaitos.fi/en/opendata-licence-cc40"),
     "osm_tiles": ("OpenStreetMap standard tiles (refinement aid only, never a texture)", "ODbL 1.0 / CC BY-SA 2.0",
                   "https://www.openstreetmap.org/copyright"),
     # elevation
