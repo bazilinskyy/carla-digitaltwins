@@ -86,7 +86,8 @@ Outside the Netherlands the twin's cached ortho is used, without the object fill
 cache (copied to another machine) fetches it again from its country's providers (`twinmodel.regions`; the country
 from the build's report, else OpenStreetMap) into `<build>/data` (e.g. NYS orthos, then NAIP in the US; Helsinki's
 city photo, then MML's in Finland; never the rendered map tiles), and adds the provider to the level's
-`ATTRIBUTION.md`. `--verges` also puts the photo on lawns and verges
+`ATTRIBUTION.md` (an export made before `twinmodel twin` wrote that file gets it whole, from its manifest; the bake
+copies an `ATTRIBUTION.md` found beside the manifest and warns when there is none). `--verges` also puts the photo on lawns and verges
 (kind `verge`, which keep CARLA's grass otherwise; NycMidtown has 33):
 
 ```sh

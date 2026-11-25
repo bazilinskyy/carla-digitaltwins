@@ -1510,7 +1510,11 @@ def copy_xodr(manifest, name, map_root=MAP_ROOT, server_signs="auto"):
 
 def _copy_beside_level(manifest, key, filename, name, map_root):
     rel = manifest.get(key)
+    if not rel and os.path.exists(os.path.join(os.path.dirname(manifest["_path"]), filename)):
+        rel = filename        # beside the manifest but not named in it (an export credited afterwards)
     if not rel:
+        if key == "attribution":
+            warn("no %s for %s: the level travels without its data sources and licences" % (filename, name))
         return None
     src = os.path.join(os.path.dirname(manifest["_path"]), rel)
     if not os.path.exists(src):

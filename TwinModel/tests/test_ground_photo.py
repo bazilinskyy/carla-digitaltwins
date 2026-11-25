@@ -213,3 +213,22 @@ def test_a_fetched_photo_is_credited_in_the_levels_attribution(tmp_path):
     assert lines.index(added[0]) == lines.index("- OpenStreetMap contributors. Licence: ODbL 1.0.") + 1
     assert gp.credit_photo(tmp_path, ["helsinki_ortho"]) == []          # once only
 
+
+
+def test_an_export_without_attribution_gets_one_from_its_manifest(tmp_path):
+    # NycMidtown (2026-11-25): built before `twinmodel twin` wrote ATTRIBUTION.md, so its photo credit was nowhere and
+    # the bake copied nothing next to the level. ground_photo now writes the whole file and names it in the manifest.
+    from twinmodel import regions
+    tool = _tool()
+    man = {"name": "NycMidtown", "stats": {"real_buildings": "nyc3d",
+                                           "building_source": "NYC 3D Building Model LoD 2 (OTI)",
+                                           "ground_photo": {"sources": {"ortho": 36}, "providers": ["nys_orthos"]}}}
+    assert "nys_orthos" in regions.used_sources(None, man)          # the provider comes from the manifest
+    tool.credit_photo(tmp_path, ["nys_orthos"], man, None)
+    text = (tmp_path / "ATTRIBUTION.md").read_text()
+    assert text.startswith("# NycMidtown: data sources and licences")
+    for what in ("OpenStreetMap contributors", "NYC 3-D Building Model", "NYS ITS Geospatial Services orthoimagery"):
+        assert text.count(what) == 1, what
+    assert man["attribution"] == "ATTRIBUTION.md"
+    assert tool.credit_photo(tmp_path, ["nys_orthos"], man, None) == []      # once only
+    assert tool.credit_photo(tmp_path / "none", ["nys_orthos"]) == []         # no manifest given: nothing written

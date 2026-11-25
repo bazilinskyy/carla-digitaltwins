@@ -210,6 +210,7 @@ def used_sources(report: Optional[dict], manifest: Optional[dict]) -> list:
     gp = st.get("ground_photo") or {}
     if (gp.get("sources") or {}).get("pdok"):
         used.append("pdok_luchtfoto")
+    used += [p for p in gp.get("providers") or () if p in SOURCES]     # tools/ground_photo.py (ortho providers)
     if gp.get("credit") and any("AHN" in c for c in gp["credit"]):
         used.append("ahn_wcs")
     out = []

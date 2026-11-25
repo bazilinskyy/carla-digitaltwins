@@ -271,14 +271,20 @@ def apply(man, out_dir: Path, textured: dict, tile_m: float, kinds=KINDS):
     return n_tex
 
 
-def credit_photo(out: Path, providers) -> list:
+def credit_photo(out: Path, providers, man=None, report=None) -> list:
     """Lists each photo provider (twinmodel.regions.SOURCES) in the level's ATTRIBUTION.md, after its other sources,
     when it is not there yet: a photo fetched here (HelsinkiSenate, 2026-11-25: City of Helsinki, CC BY 4.0) was not
-    in the file the build wrote. Returns the lines added."""
+    in the file the build wrote. An export without the file (built before ``twinmodel twin`` wrote one: NycMidtown,
+    2026-11-25) gets it whole from its manifest (and the build's report.json), and the manifest names it so the bake
+    copies it next to the level. Returns the lines added."""
     from twinmodel import regions
     path = Path(out) / "ATTRIBUTION.md"
     if not path.exists():
-        return []
+        if man is None:
+            return []
+        path.write_text(regions.attribution_text(man.get("name") or Path(out).parent.name, report, man),
+                        encoding="utf-8")
+        man["attribution"] = "ATTRIBUTION.md"
     text = path.read_text()
     lines = text.splitlines()
     added = []
@@ -416,9 +422,15 @@ def main(argv=None):
         "credit": ([PDOK_CREDIT] if sources.get("pdok") else []) +
                   ([ortho_credit()] if sources.get("ortho") else []) +
                   ([AHN_CREDIT] if ndsm_ok else [])}
+    providers = (["pdok_luchtfoto"] if sources.get("pdok") else []) + \
+        ([fetched["source"]] if sources.get("ortho") and fetched.get("source") else [])
+    man["stats"]["ground_photo"]["providers"] = providers      # regions.used_sources credits them from here
+    try:
+        report = json.loads((build / "report.json").read_text())
+    except (OSError, ValueError):
+        report = None
+    credit_photo(out, providers, man, report)
     (out / "manifest.json").write_text(json.dumps(man, indent=1))
-    credit_photo(out, (["pdok_luchtfoto"] if sources.get("pdok") else []) +
-                 ([fetched["source"]] if sources.get("ortho") and fetched.get("source") else []))
     cache.mkdir(parents=True, exist_ok=True)   # outside the Netherlands nothing was fetched into it
     (cache / "report.json").write_text(json.dumps({**man["stats"]["ground_photo"], "per_tile": per_tile}, indent=1))
     if args.preview and textured:
