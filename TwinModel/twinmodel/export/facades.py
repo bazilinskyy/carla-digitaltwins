@@ -60,6 +60,9 @@ class Style:
     blank: bool = False         # no windows at all
     band: Optional[tuple] = None   # a horizontal band at every floor (concrete floor edge, stone string course)
     band_m: float = 0.25           # its height
+    surround: Optional[tuple] = None   # a moulded window surround (stone or stucco architrave) of this colour
+    surround_m: float = 0.14           # its width around the frame
+    balcony: bool = False          # a wrought-iron railing and a stone slab across each (floor-length) window
 
 
 STYLES = {s.name: s for s in (
@@ -118,17 +121,37 @@ STYLES = {s.name: s for s in (
     # southern homes and blocks after 1940: warm render (cream, ochre, terracotta), shutters' dark frames
     Style("render_warm", 3.0, 3.0, "render", ((232, 214, 178), (214, 168, 112), (196, 128, 92)),
           window=(0.22, 0.78, 0.12, 0.86), frame=(70, 66, 58), mullions=1, sill=True),
+    # old towns of southern Europe (historic area or before 1900): ashlar in the local stone, moulded surrounds,
+    # a cornice at every floor, floor-length balcony doors with wrought-iron balconies (Salamanca's golden
+    # Villamayor sandstone and its Plaza Mayor; also Madrid, Seville, Lisbon limestone)
+    Style("stone_balcony", 2.4, 3.6, "brick", ((206, 166, 104), (196, 152, 92), (214, 182, 124), (188, 170, 140)),
+          window=(0.31, 0.69, 0.03, 0.80), frame=(72, 54, 40), mullions=1, transom=False, sill=False,
+          mortar=(200, 170, 120), brick_m=(0.80, 0.40), band=(184, 146, 92), band_m=0.30,
+          surround=(222, 194, 140), surround_m=0.16, balcony=True),
+    # old towns of central and northern Europe (historic area or before 1900): stucco in pale ochre, yellow, white,
+    # grey, salmon or green, white moulded surrounds and cornices, tall two-pane windows (Helsinki's Senate Square
+    # and Kruununhaka, Zurich's Altstadt, Vienna, Prague)
+    Style("stucco_old", 2.6, 3.5, "render", ((226, 204, 140), (234, 230, 218), (214, 180, 124), (204, 200, 190),
+                                             (220, 174, 142), (196, 204, 176)),
+          window=(0.30, 0.70, 0.16, 0.82), frame=(242, 240, 232), mullions=1, transom=True, sill=True,
+          band=(238, 234, 222), band_m=0.22, surround=(242, 238, 228), surround_m=0.12),
+    # central and northern European homes and blocks after 1900 or of unknown age: light plaster, not brick
+    Style("render_central", 2.8, 3.0, "render", ((230, 228, 220), (212, 208, 196), (198, 194, 186), (224, 214, 194)),
+          window=(0.20, 0.80, 0.16, 0.86), frame=(84, 84, 86), mullions=1, sill=True),
     # party walls, narrow walls, sheds: plain wall at true brick scale
     Style("blank_brick", 2.5, 3.0, "brick", ((132, 60, 44), (110, 80, 62)), blank=True, sill=False),
     # the plain wall of the light and buff brick styles
     Style("blank_brick_light", 2.5, 3.0, "brick", ((178, 148, 110), (160, 150, 140)), blank=True, sill=False),
+    # the plain wall of the stucco and plaster styles
+    Style("blank_render", 2.5, 3.0, "render", ((214, 206, 190), (196, 190, 178)), blank=True, sill=False),
 )}
 
 # style -> the plain wall its party walls get
 BLANK_OF = {"stone_prewar": "blank_brick", "stone_old": "blank_brick", "render_warm": "blank_brick",
             "render_modern": "blank_brick", "office_concrete": "blank_brick", "office_glass": "blank_brick",
             "industrial": "industrial", "shopfront": "blank_brick", "brick_wederopbouw": "blank_brick_light",
-            "brick_contemporary": "blank_brick_light", "concrete_panel": "blank_brick", "office_brick": "blank_brick"}
+            "brick_contemporary": "blank_brick_light", "concrete_panel": "blank_brick", "office_brick": "blank_brick",
+            "stone_balcony": "blank_render", "stucco_old": "blank_render", "render_central": "blank_render"}
 
 
 def _crc(*parts) -> int:
@@ -215,6 +238,8 @@ class BuildingInfo:
                                                # "south": stone before 1940, warm render after (no brick)
     shop_pois: Optional[int] = None            # ground-floor shops, cafes, ... (OSM) at the facade; None: unknown
     material: Optional[str] = None             # OSM building:material / building:facade:material
+    historic: bool = False                     # in an old town: a historic area (OSM heritage, historic district,
+                                               # protected area) or the building itself tagged historic/heritage
 
 
 def dominant_use(uses: dict) -> Optional[str]:
@@ -266,13 +291,20 @@ def _by_material(b: BuildingInfo, style: str, home: bool) -> str:
     if wall == "stone":
         return "stone_prewar" if b.region == "us" else "stone_old"
     if wall == "render":
-        return "render_warm" if b.region == "south" else "render_modern"
+        return "render_warm" if b.region == "south" else "stucco_old" if b.region == "central" and b.historic else \
+            "render_central" if b.region == "central" else "render_modern"
     if wall == "brick":
         if not home:
             return "office_brick"
         return "brick_contemporary" if b.region == "nl" and style == "render_modern" else \
             ("brick_modern" if style.startswith(("render", "stone")) else style)
     return style
+
+
+RELIGIOUS = {"church", "cathedral", "chapel", "basilica", "monastery", "convent", "mosque", "synagogue", "temple",
+             "religious", "shrine"}   # OSM building values: never office glass, whatever their height
+OLD_TOWN_YEAR = 1900   # built before this: an old-town facade in the south and central regions, area or not
+OLD_TOWN_MAX_M = 30.0  # taller buildings in an old town keep their own style (towers, modern blocks)
 
 
 def classify(b: BuildingInfo) -> tuple[str, bool]:
@@ -302,6 +334,19 @@ def _classify(b: BuildingInfo) -> tuple[str, bool]:
     shop_floor = shops and b.height_m >= SHOP_FLOOR_M + 2.5
     if b.region == "us" and 0 < year < 1946 and b.height_m >= 20.0:
         return "stone_prewar", shop_floor   # Manhattan's pre-war towers and apartment blocks
+    if b.region in ("south", "central") and (cat in RELIGIOUS or use == "religious"):
+        # a church or cathedral: the region's stone or stucco (HelsinkiSenate's cathedral, 2026-11-25: tall and
+        # without a year, it had the glass office look)
+        return ("stone_old" if b.region == "south" else "stucco_old"), False
+    old_town = b.region in ("south", "central") and (b.historic or 0 < year < OLD_TOWN_YEAR) and \
+        b.height_m < OLD_TOWN_MAX_M
+    if old_town and b.region == "south":
+        # Catastro's year is often the last refit, so the historic area decides: ashlar and balconies for homes
+        # and mixed blocks, plain ashlar for public buildings, churches and offices
+        home_like = use not in OFFICE_USES and not (use is None and cat in OSM_OFFICE)
+        return ("stone_balcony" if home_like else "stone_old"), shop_floor
+    if old_town:
+        return "stucco_old", shop_floor
     if b.region == "south" and 0 < year < 1940 and b.height_m < 40.0:
         return "stone_old", shop_floor      # old public buildings, churches, colleges: stone, not office glass
     one_storey_shop = b.height_m < SHOP_FLOOR_M + 2.5 and (
@@ -332,6 +377,8 @@ def _classify(b: BuildingInfo) -> tuple[str, bool]:
         return "render_warm", shop_floor
     if b.region == "nl":
         return _nl_home(b, year), shop_floor
+    if b.region == "central":       # plaster, not brick (Helsinki, Zurich: Overture gives no year)
+        return ("render_modern" if year >= 1995 and _crc("render", b.id) % 3 == 0 else "render_central"), shop_floor
     if 0 < year < 1940:
         return "brick_old", shop_floor
     if year < 1980:
@@ -548,6 +595,13 @@ def synth_facade(style: Style, variant: int = 0, px: int = TEX_PX, seed: int = 0
             for bx in range(TEX_BAYS):
                 floor = (sy + 1) * sh
                 wx0, wx1, wy0, wy1, door = _window_rect(style, variant, bx, sy, bw, sh)
+                if style.surround is not None:    # moulded architrave around the window, a little proud of the wall
+                    spx = max(2, int(round(style.surround_m / style.bay_m * bw)))
+                    sy0, sy1 = max(0, wy0 - spx), min(h, wy1 + (0 if style.balcony else spx))
+                    col[sy0:sy1, max(0, wx0 - spx):min(w, wx1 + spx)] = np.asarray(style.surround, float) * \
+                        rng.uniform(0.97, 1.03)
+                    height[sy0:sy1, max(0, wx0 - spx):min(w, wx1 + spx)] = 0.35
+                    rough[sy0:sy1, max(0, wx0 - spx):min(w, wx1 + spx)] = 0.8
                 # frame (outer rectangle) then glass inset
                 col[wy0:wy1, wx0:wx1] = style.frame
                 height[wy0:wy1, wx0:wx1] = -0.3
@@ -589,6 +643,28 @@ def synth_facade(style: Style, variant: int = 0, px: int = TEX_PX, seed: int = 0
                     l1 = wy0
                     l0 = max(0, wy0 - int(0.22 / style.storey_m * sh))
                     col[l0:l1, wx0:wx1] *= 0.8
+                if style.balcony and not door:   # wrought-iron railing on a stone slab across the floor-length window
+                    floor_px = int(round(floor))
+                    slab = max(2, int(0.12 / style.storey_m * sh))
+                    rail_h = int(0.95 / style.storey_m * sh)
+                    over = int(0.16 / style.bay_m * bw)
+                    xa, xb = max(0, wx0 - over), min(w, wx1 + over)
+                    s0 = max(0, floor_px - slab)
+                    col[s0:floor_px, xa:xb] = np.asarray(style.surround or style.band or (200, 190, 170), float)
+                    height[s0:floor_px, xa:xb] = 0.6
+                    r0 = max(0, s0 - rail_h)
+                    iron = np.asarray((38, 36, 34), float)
+                    bar = max(1, int(0.018 / style.bay_m * bw))
+                    col[r0:r0 + 2 * bar, xa:xb] = iron                       # top rail
+                    col[s0 - 2 * bar:s0, xa:xb] = iron                       # bottom rail
+                    step = max(3 * bar, int(0.11 / style.bay_m * bw))
+                    for xx in range(xa, xb, step):                           # balusters
+                        col[r0:s0, xx:xx + bar] = iron
+                    for yy in (r0 + rail_h // 3, r0 + 2 * rail_h // 3):     # a little scrollwork: two thin bars
+                        col[yy:yy + bar, xa:xb] = iron
+                    rough[r0:s0, xa:xb] = np.where((col[r0:s0, xa:xb] == iron).all(-1), 0.55, rough[r0:s0, xa:xb])
+                    metal[r0:s0, xa:xb] = np.where((col[r0:s0, xa:xb] == iron).all(-1), 0.6, metal[r0:s0, xa:xb])
+                    height[r0:s0, xa:xb] = np.where((col[r0:s0, xa:xb] == iron).all(-1), 0.5, height[r0:s0, xa:xb])
                 if style.shop:   # sign band above the shop window
                     b0 = max(0, int(floor - 0.97 * sh))
                     b1 = max(b0 + 1, int(floor - 0.80 * sh))
@@ -634,7 +710,8 @@ LIGHT_COOL_SHARE = 0.12   # lit windows with cool white light (LED, screens) ins
 USE_OF_STYLE = {"stone_prewar": "home", "stone_old": "home", "render_warm": "home", "brick_old": "home", "brick_postwar": "home", "brick_modern": "home", "render_modern": "home",
                 "brick_wederopbouw": "home", "brick_late": "home", "concrete_panel": "home",
                 "brick_contemporary": "home", "office_concrete": "office", "office_glass": "office",
-                "office_brick": "office", "shopfront": "shop", "industrial": "industry"}
+                "office_brick": "office", "shopfront": "shop", "industrial": "industry", "stone_balcony": "home",
+                "stucco_old": "home", "render_central": "home"}
 
 
 def light_offset(building_id: str, wall: int) -> tuple[int, int]:

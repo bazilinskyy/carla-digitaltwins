@@ -232,3 +232,14 @@ def test_an_export_without_attribution_gets_one_from_its_manifest(tmp_path):
     assert man["attribution"] == "ATTRIBUTION.md"
     assert tool.credit_photo(tmp_path, ["nys_orthos"], man, None) == []      # once only
     assert tool.credit_photo(tmp_path / "none", ["nys_orthos"]) == []         # no manifest given: nothing written
+
+
+def test_a_cached_photo_remembers_its_provider(tmp_path):
+    # the photo fetched by real_buildings for the roofs, found cached by ground_photo afterwards, keeps its credit
+    from twinmodel.export import realbuildings
+    p = tmp_path / "data" / "ortho_1.00000_2.00000_3.00000_4.00000_0.25m_x.tif"
+    p.parent.mkdir(parents=True)
+    p.write_bytes(b"")
+    assert realbuildings.ortho_provider(p) is None
+    p.with_suffix(".source").write_text("helsinki_ortho\n")
+    assert realbuildings.ortho_provider(p) == "helsinki_ortho"

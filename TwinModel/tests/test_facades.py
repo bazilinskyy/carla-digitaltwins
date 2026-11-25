@@ -288,3 +288,48 @@ def test_window_lights_mask(name):
     # a rank is uniform over its cell (filtering never mixes two windows' ranks inside the glass)
     c = m[:32, :32, 1]
     assert (c == c[0, 0]).all()
+
+
+def test_old_towns_get_historic_facades_by_region():
+    from twinmodel.export import facades as F
+    home = dict(id="b1", uses={"residential": 400}, height_m=14.0, area_m2=300.0)
+    # southern old town: ashlar and balconies for homes, plain ashlar for offices; outside it, as before
+    assert F.classify(F.BuildingInfo(**home, year=1987, region="south", historic=True))[0] == "stone_balcony"
+    assert F.classify(F.BuildingInfo(**dict(home, uses={"office": 900}), year=1987, region="south",
+                                     historic=True))[0] == "stone_old"
+    assert F.classify(F.BuildingInfo(**home, year=1987, region="south"))[0] == "render_warm"
+    assert F.classify(F.BuildingInfo(**home, year=1780, region="south"))[0] == "stone_balcony"   # old by its year
+    # central Europe: stucco in the old town, light plaster elsewhere, never Dutch brick
+    assert F.classify(F.BuildingInfo(**home, region="central", historic=True))[0] == "stucco_old"
+    assert F.classify(F.BuildingInfo(**home, region="central"))[0] == "render_central"
+    assert F.classify(F.BuildingInfo(**dict(home, height_m=45.0), region="central", historic=True))[0] != "stucco_old"
+    # churches: the region's stone or stucco whatever their height, never office glass
+    church = dict(home, uses={}, height_m=34.0, osm_category="cathedral")
+    assert F.classify(F.BuildingInfo(**church, region="central"))[0] == "stucco_old"
+    assert F.classify(F.BuildingInfo(**church, region="south"))[0] == "stone_old"
+    # the other regions do not change with the flag
+    for region, year in (("nl", 1930), ("nl", 1985), ("us", 1930), ("jp", 1990), ("eu", 1950)):
+        a = F.classify(F.BuildingInfo(**home, year=year, region=region))
+        assert F.classify(F.BuildingInfo(**home, year=year, region=region, historic=True)) == a, region
+    assert F.BLANK_OF["stucco_old"] == "blank_render" and F.USE_OF_STYLE["stone_balcony"] == "home"
+
+
+def test_balcony_and_surround_are_drawn():
+    import numpy as np
+    from twinmodel.export import facades as F
+    alb, nrm, orm = F.synth_facade(F.STYLES["stone_balcony"], 0, px=256)
+    iron = (alb == np.array([38, 36, 34], np.uint8)).all(-1)
+    assert iron.sum() > 200                           # railings
+    assert (orm[..., 2][iron] > 100).all()            # metallic iron
+    alb2, _, _ = F.synth_facade(F.STYLES["stucco_old"], 1, px=256)
+    near_white = np.abs(alb2.astype(int) - np.array([242, 238, 228])).sum(-1) < 30
+    assert near_white.sum() > 300                     # white surrounds
+
+
+def test_central_buildings_keep_the_eu_geometry():
+    # the central region (plaster facades) must not change roofs, storeys or floors (ZurichHB, 2026-11-25: its
+    # guessed gables vanished when the region was not in these tables)
+    from twinmodel.ingest import buildings_extrude as be
+    for table in (be.REGION_ROOF, be.STOREY_M, be.DEFAULT_LEVELS):
+        assert table["central"] == table["eu"]
+    assert be.guess_roof("", 150.0, 8.0, "central") == be.guess_roof("", 150.0, 8.0, "eu") == "gabled"

@@ -38,8 +38,10 @@ LEFT_HAND = frozenset("""
     JM BS BB TT GY SR AG DM GD KN LC VC AI BM VG KY MS TC VI FK
 """.split())
 
-# facade region (twinmodel.export.facades.classify): "south" = warm render and sandstone instead of brick
+# facade region (twinmodel.export.facades.classify): "south" = warm render and sandstone instead of brick;
+# "central" = plaster and stucco instead of brick (old towns of stucco, homes of light plaster)
 SOUTH = frozenset("ES PT IT GR MT CY HR FR MC AD SM VA MX AR CL UY PE CO BR EC BO PY VE MA TN DZ IL LB TR".split())
+CENTRAL = frozenset("CH AT LI FI EE LV LT CZ SK HU SI PL".split())
 
 # (s, w, n, e) boxes each provider covers; outside them it is skipped without a request
 COVERAGE = {
@@ -99,10 +101,10 @@ COUNTRIES = {
            "south"),
     "FR": (("ign_fr", "osm_tiles"), ("rge_alti",) + GLOBAL_DEM, ("bdtopo",) + GLOBAL_BUILDINGS, "south"),
     "BE": (("flanders", "osm_tiles"), GLOBAL_DEM, GLOBAL_BUILDINGS, "nl"),
-    "CH": (("swissimage", "osm_tiles"), ("swissalti3d",) + GLOBAL_DEM, GLOBAL_BUILDINGS, "eu"),
+    "CH": (("swissimage", "osm_tiles"), ("swissalti3d",) + GLOBAL_DEM, GLOBAL_BUILDINGS, "central"),
     "US": (("nys_orthos", "naip", "osm_tiles"), ("usgs_3dep",) + GLOBAL_DEM, ("nyc3d",) + GLOBAL_BUILDINGS, "us"),
     "CA": (("osm_tiles",), GLOBAL_DEM, GLOBAL_BUILDINGS, "us"),
-    "FI": (("helsinki_ortho", "mml_ortho", "osm_tiles"), GLOBAL_DEM, GLOBAL_BUILDINGS, "eu"),
+    "FI": (("helsinki_ortho", "mml_ortho", "osm_tiles"), GLOBAL_DEM, GLOBAL_BUILDINGS, "central"),
     "JP": (("gsi_photo", "osm_tiles"), ("gsi_dem",) + GLOBAL_DEM, ("plateau",) + GLOBAL_BUILDINGS, "jp"),
 }
 
@@ -113,7 +115,8 @@ def plan_for(iso2: Optional[str], bbox_swne=None) -> RegionPlan:
     cc = (iso2 or "").upper() or None
     ortho, dem, blds, region = COUNTRIES.get(cc or "", (("osm_tiles",), GLOBAL_DEM, GLOBAL_BUILDINGS, None))
     if region is None:
-        region = "south" if cc in SOUTH else "us" if cc in ("US", "CA") else "jp" if cc == "JP" else "eu"
+        region = "south" if cc in SOUTH else "central" if cc in CENTRAL else "us" if cc in ("US", "CA") else \
+            "jp" if cc == "JP" else "eu"
     notes = []
     if bbox_swne is not None:
         ortho = tuple(p for p in ortho if covers(p, bbox_swne))

@@ -349,6 +349,8 @@ def main(argv=None):
             op = Path(args.ortho) if args.ortho else find_ortho(build, man["bbox_wgs84"])
             if op is None and not args.ortho:   # an export without its build's cache: the profile's providers
                 op, fetched["source"] = realbuildings.fetch_twin_ortho(build, man)
+            elif op is not None and not args.ortho:  # fetched earlier (real_buildings, a previous run): its provider
+                fetched["source"] = realbuildings.ortho_provider(op)
             ortho = (load_ortho(op, man["geo_reference"]) if op and op.exists() else None) or False
             print("ortho: %s" % (op.name if ortho else "none"))
         return ortho or None

@@ -238,3 +238,31 @@ def test_plateau_meshes_and_coverage():
     assert pl.USAGE["414"]["retail"] > 0
     assert fc.classify(fc.BuildingInfo(id="j", uses={"residential": 1}, height_m=20, area_m2=300,
                                        region="jp")) == ("render_modern", False)
+
+
+def test_an_export_without_its_builds_terrain_keeps_its_buildings_in_place(tmp_path):
+    # restyling an export copied away from its build (ZurichHB, 2026-11-25): an elevation grid from the export's
+    # own surfaces over the ground plane, and the buildings it already had keep their base heights by id
+    import json
+    from shapely.geometry import box
+    from twinmodel.export import realbuildings as rb
+    from .test_surface_gaps import _export
+    ue = _export(tmp_path, [("drivable", -20, 20, -4, 4, 412.0), ("sidewalk", -20, 20, 4, 8, 412.15)],
+                 ground_z=411.65)
+    man = json.loads((ue / "manifest.json").read_text())
+    man["bbox_wgs84"] = [47.37, 8.53, 47.38, 8.54]
+    p = rb.dem_from_export(tmp_path, man)
+    assert p is not None and rb.find_dem(tmp_path, man["bbox_wgs84"]) == p
+    from twinmodel.ingest.buildings_extrude import Ground
+    g = Ground(p)
+    lo, med = g.sample(box(-2, -2, 2, 2))
+    assert abs(med - 412.0) < 0.05                                       # on the road
+    lo, med = g.sample(box(30, 30, 34, 34))
+    assert abs(med - 412.0) < 0.05                                       # off the surfaces: the plane + its drop
+    man["buildings"] = [{"id": "OV.a", "real": "overture", "base_z_cm": 41030.0}]
+    ring = [np.array([[0, 0, 400.0], [5, 0, 400.0], [5, 5, 400.0]])]
+    moved = rb.RealBuilding(id="OV.a", surfaces=[(ring, "wall")], ground=400.0, height=9.0, roof_z=409.0)
+    new = rb.RealBuilding(id="OV.b", surfaces=[([r.copy() for r in ring], "wall")], ground=400.0, height=9.0)
+    assert rb.keep_bases([moved, new], man) == 1
+    assert moved.ground == 410.3 and abs(moved.surfaces[0][0][0][0, 2] - 410.3) < 1e-9 and moved.roof_z == 419.3
+    assert new.ground == 400.0                                           # a new building: the grid places it

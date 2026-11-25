@@ -293,8 +293,9 @@ def test_make_building_parts_and_eaves_percentile():
     assert not guessed and b.parts == 2 and b.poly.area == pytest.approx(240.0)
     assert b.height == pytest.approx(18.6)                      # 70 % of the area is the tall part
     assert b.roof_z == pytest.approx(18.6) and b.region == "south"
+    # built before 1900: the southern old-town facade (ashlar with balconies, 2026-11-25; plain ashlar before)
     assert fc.classify(fc.BuildingInfo(id=b.id, year=b.year, uses=b.uses, height_m=b.height,
-                                       area_m2=b.poly.area, region=b.region))[0] == "stone_old"
+                                       area_m2=b.poly.area, region=b.region))[0] == "stone_balcony"
 
 
 def test_south_facades():

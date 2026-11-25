@@ -183,7 +183,23 @@ materials. Overture is read from its GeoParquet release on S3 with DuckDB (`pip 
 fails the twin's own OSM footprints are used. Footprint models (Catastro, BD TOPO, Overture, OSM) become prisms
 with gabled, hipped, pyramidal or skillion roofs where the source gives a roof shape (or BD TOPO a ridge above the
 eaves); small homes without one get a pitched roof by the region's habit. Facade styles follow the region:
-Dutch and north European brick, southern sandstone (before 1940) and warm render, US pre-war stone, Japanese render.
+Dutch and north European brick, southern sandstone (before 1940) and warm render, central and northern European
+plaster (Switzerland, Austria, Finland, the Baltics, Czechia, Slovakia, Hungary, Slovenia, Poland), US pre-war stone,
+Japanese render.
+
+**Old towns.** In the southern and central regions a building in an old town gets a historic facade: in OSM a
+historic area around it (a `heritage=*` area, `historic=district`, a cultural protected area with
+`protect_class=22`), or the building itself tagged `heritage`, `historic`, a historic `building:architecture` or a
+`start_date` before 1900, or a register year before 1900 (the Catastro's is often the last refit, so the area
+decides). Where OSM maps no such area, the old buildings themselves mark it: six or more within 40 m of each other
+make an old core. Southern old towns get ashlar in the local stone with moulded window surrounds, a cornice at
+every floor and floor-length balcony doors with wrought-iron balconies (`stone_balcony`: Salamanca's golden
+Villamayor stone; public buildings and offices plain ashlar); central ones pale stucco in ochre, yellow, white,
+grey, salmon or green with white surrounds and cornices (`stucco_old`). Buildings over 30 m to the eaves keep their
+own style; churches and cathedrals get the stone or stucco whatever their height. Arcades come from OSM's
+`building:part` heights (`tools/osm_detail.py`). An export copied away from its build can be restyled with
+`tools/real_buildings.py`: its country, aerial photo and terrain come again from the export itself (the buildings it
+had keep their base heights), and the OSM-detail and paving steps are redone afterwards.
 
 **Dutch facades by era and street.** In the Netherlands the BAG construction year picks the era's facade
 (`twinmodel/export/facades.py`): pre-war orange-red or dark brown-grey brick with string courses (also for pre-war

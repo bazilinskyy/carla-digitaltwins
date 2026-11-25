@@ -27,11 +27,11 @@ SHAPE_ALIASES = {"gabled": "gabled", "saltbox": "gabled", "gambrel": "gabled", "
                  "cone": "pyramidal", "skillion": "skillion", "lean_to": "skillion", "flat": "flat"}
 # typical pitch (degrees) of a guessed home roof per facade region, and its roof shape
 REGION_ROOF = {"nl": ("gabled", 40.0), "eu": ("gabled", 38.0), "us": ("hipped", 25.0), "south": ("hipped", 22.0),
-               "jp": ("hipped", 25.0)}
+               "jp": ("hipped", 25.0), "central": ("gabled", 38.0)}   # central: as eu (only its facades differ)
 HOME_CATEGORIES = {"house", "detached", "semidetached_house", "semi", "terrace", "bungalow", "cabin", "farm",
                    "residential", "static_caravan", "villa", "hut"}
-STOREY_M = {"nl": 3.0, "eu": 3.1, "us": 3.3, "south": 3.0, "jp": 3.0}
-DEFAULT_LEVELS = {"nl": 3, "eu": 3, "us": 2, "south": 4, "jp": 2}
+STOREY_M = {"nl": 3.0, "eu": 3.1, "us": 3.3, "south": 3.0, "jp": 3.0, "central": 3.1}
+DEFAULT_LEVELS = {"nl": 3, "eu": 3, "us": 2, "south": 4, "jp": 2, "central": 3}
 
 
 @dataclass
@@ -56,7 +56,7 @@ def guess_roof(category: Optional[str], area_m2: float, eaves_h: float, region: 
     small = area_m2 < 220.0 and eaves_h <= 10.0
     if cat in HOME_CATEGORIES and area_m2 < 400.0 and eaves_h <= 12.0:
         return REGION_ROOF.get(region, REGION_ROOF["eu"])[0]
-    if cat in ("", "yes") and small and region in ("nl", "eu", "us"):
+    if cat in ("", "yes") and small and region in ("nl", "eu", "us", "central"):
         return REGION_ROOF.get(region, REGION_ROOF["eu"])[0]
     return None
 

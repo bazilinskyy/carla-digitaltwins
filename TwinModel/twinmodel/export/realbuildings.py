@@ -209,7 +209,18 @@ def fetch_twin_ortho(build_dir: Path, man: dict):
     img = fetch_ortho(LocalFrame(o["lat"], o["lon"]), bbox, cache_dir=Path(build_dir) / "data", sources=sources)
     if img is None:
         return None, None
-    return find_ortho(Path(build_dir), bbox), img.source
+    path = find_ortho(Path(build_dir), bbox)
+    if path is not None and img.source:   # the provider beside the photo: a later run that finds it cached credits it
+        path.with_suffix(".source").write_text(str(img.source))
+    return path, img.source
+
+
+def ortho_provider(path) -> Optional[str]:
+    """The provider of a cached photo fetched by fetch_twin_ortho (its .source file), or None."""
+    try:
+        return Path(path).with_suffix(".source").read_text().strip() or None
+    except (OSError, TypeError):
+        return None
 
 
 def twin_iso2(build_dir: Path, man: dict):
@@ -262,6 +273,93 @@ def find_dem(build_dir: Path, bbox_wgs84) -> Optional[Path]:
         if hits:
             return sorted(hits, key=lambda p: float(p.name[len(stem):].split("m")[0]))[0]
     return None
+
+
+DEM_EXPORT_RES_M = 2.0
+
+
+def keep_bases(buildings: list, man: dict, tol_m: float = 0.01) -> int:
+    """Rebuilding an export's buildings without the build's elevation grid (restyling an export copied away from
+    its build): each building the export already had (same provider id) is moved back onto the base height it had
+    there, so it stands where it stood; the export's own surfaces only place the new ones (dem_from_export, whose
+    20 m terrain is off by more than 3 m for 7 % of ZurichHB's buildings). Returns the buildings moved."""
+    old = {b["id"]: b["base_z_cm"] / 100.0 for b in man.get("buildings", ())
+           if b.get("real") and b.get("base_z_cm") is not None}
+    n = 0
+    for b in buildings:
+        z0 = old.get(b.id)
+        if z0 is None or b.ground is None or abs(z0 - b.ground) < tol_m:
+            continue
+        dz = z0 - b.ground
+        b.surfaces = [([np.asarray(r, float) + [0.0, 0.0, dz] for r in rings], kind) for rings, kind in b.surfaces]
+        b.ground = z0
+        if b.roof_z is not None:
+            b.roof_z += dz
+        n += 1
+    return n
+
+
+def dem_from_export(build_dir: Path, man: dict, res_m: float = DEM_EXPORT_RES_M) -> Optional[Path]:
+    """An elevation grid from the export's own road, pavement and ground surfaces, written where find_dem looks
+    (<build_dir>/data/dem_<bbox>_<res>m.npz), for an export copied away from its build (whose cached grid stayed
+    behind: SalamancaPlaza, HelsinkiSenate, ZurichHB, 2026-11-25): without it the buildings would stand at height
+    0. Each cell takes the top surface over it; cells under buildings take the nearest surface. None when the
+    export has no surfaces."""
+    import sys as _sys
+    from scipy import ndimage
+    tools = Path(__file__).resolve().parents[2] / "tools"
+    if str(tools) not in _sys.path:
+        _sys.path.insert(0, str(tools))
+    import surface_gaps as sg
+    from .ue import GROUND_PLANE_DROP, gltf_to_model, read_glb
+    ue = Path(build_dir) / "ue"
+    try:
+        tris, _kind, _layer, _src = sg._load(ue, man, fills=True)
+    except ValueError:      # no road, pavement or ground surface at all
+        tris = np.zeros((0, 3, 3))
+    # the ground plane follows the terrain (GROUND_PLANE_DROP under it) over the whole twin and past its surfaces:
+    # the bottom layer, under every road, pavement and ground tile
+    plane = []
+    for a in man["assets"]:
+        if a["kind"] == "groundplane":
+            g = read_glb(ue / a["file"])
+            if len(g["faces"]):
+                plane.append(gltf_to_model(g["positions"].astype(float))[g["faces"].astype(np.int64)])
+    plane = np.concatenate(plane) + [0.0, 0.0, GROUND_PLANE_DROP] if plane else np.zeros((0, 3, 3))
+    if not len(tris) and not len(plane):
+        return None
+    tris = np.concatenate([plane, tris]) if len(plane) else tris
+    grid = sg.Grid(tris)
+    np_ = len(plane)
+    order = np.concatenate([np.arange(np_), np_ + np.argsort(tris[np_:, :, 2].mean(axis=1), kind="stable")])
+    rid = grid.raster_ids(tris[order], order)                          # the surfaces over the plane, the top wins
+    # each triangle's plane z = ax + by + c (steep ones: their top), clamped to its own heights, for every cell
+    a0, b0, c0 = tris[:, 0], tris[:, 1], tris[:, 2]
+    nrm = np.cross(b0 - a0, c0 - a0)
+    flat = np.abs(nrm[:, 2]) >= sg.STEEP_NZ * np.linalg.norm(nrm, axis=1)
+    nz = np.where(flat, nrm[:, 2], 1.0)
+    pa, pb = np.where(flat, -nrm[:, 0] / nz, 0.0), np.where(flat, -nrm[:, 1] / nz, 0.0)
+    pc = np.where(flat, a0[:, 2] - pa * a0[:, 0] - pb * a0[:, 1], tris[:, :, 2].max(axis=1))
+    lo, hi = tris[:, :, 2].min(axis=1), tris[:, :, 2].max(axis=1)
+    z = np.full(rid.shape, np.nan)
+    rr, cc = np.nonzero(rid > 0)
+    t = rid[rr, cc] - 1
+    xs = grid.x0 + (cc + 0.5) * sg.RES
+    ys = grid.y0 + (rr + 0.5) * sg.RES
+    z[rr, cc] = np.clip(pa[t] * xs + pb[t] * ys + pc[t], lo[t], hi[t])
+    if not np.isfinite(z).any():
+        return None
+    _, (ir, ic) = ndimage.distance_transform_edt(~np.isfinite(z), return_indices=True)
+    z = z[ir, ic]
+    k = max(1, int(round(res_m / sg.RES)))
+    zz = z[: z.shape[0] // k * k, : z.shape[1] // k * k].reshape(z.shape[0] // k, k, z.shape[1] // k, k).min(axis=(1, 3))
+    s, w, n, e = man["bbox_wgs84"]
+    out = Path(build_dir) / "data" / ("dem_%.5f_%.5f_%.5f_%.5f_%gm.npz" % (s, w, n, e, res_m))
+    out.parent.mkdir(parents=True, exist_ok=True)
+    x0, y0 = grid.x0 + 0.5 * sg.RES, grid.y0 + 0.5 * sg.RES
+    np.savez_compressed(out, z=zz.astype(np.float32), x0=x0 + (k - 1) * sg.RES / 2, y0=y0 + (k - 1) * sg.RES / 2,
+                        dx=k * sg.RES, dy=k * sg.RES, source="export surfaces")
+    return out
 
 
 def skirt(buildings: list, dem_path: Path, below_m: float = 0.3, step_m: float = 1.0) -> int:
@@ -324,6 +422,67 @@ def is_real(b: dict) -> bool:
 
 SHOP_POI_M = 6.0    # a shop or cafe this close to a building's walls (outside, or inside near the wall) is its own
 SHOP_WALL_SLACK_M = 1.5   # the walls nearest one of its shops (to this much more than the nearest) get a shopfront
+
+
+HISTORIC_ARCH = ("baroque", "gothic", "renaissance", "romanesque", "classicism", "neoclassicism", "classical",
+                 "neoclassical", "historicism", "art_nouveau", "jugendstil", "empire", "biedermeier", "plateresque",
+                 "mudejar", "rococo", "eclectic", "neo-gothic", "neogothic", "georgian", "victorian")
+
+
+def old_building(tags: dict) -> bool:
+    """Whether a building's own OSM tags say it is old: heritage or historic (not "no"), a historic
+    architecture, or a start_date before facades.OLD_TOWN_YEAR."""
+    from twinmodel.export import facades
+    if str(tags.get("heritage", "")).strip().lower() not in ("", "no"):
+        return True
+    if str(tags.get("historic", "")).strip().lower() not in ("", "no"):
+        return True
+    arch = str(tags.get("building:architecture", "")).lower()
+    if any(a in arch for a in HISTORIC_ARCH):
+        return True
+    sd = str(tags.get("start_date", "")).strip().lstrip("~C").split("-")[0].split("..")[0]
+    try:
+        y = int(float(sd[:4])) if sd[:4].isdigit() else None
+    except ValueError:
+        y = None
+    if y is None and sd[:2].isdigit() and "c" in str(tags.get("start_date", "")).lower():
+        y = (int(sd[:2]) - 1) * 100      # "C18" / "18th century"
+    return y is not None and 0 < y < facades.OLD_TOWN_YEAR
+
+
+def historic_areas(street: Optional[dict]):
+    """The union of the street data's historic areas (model frame), or None."""
+    from shapely.geometry import Polygon
+    from shapely.ops import unary_union
+    polys = []
+    for rings, _tags in (street or {}).get("areas", ()):
+        for ring in rings:
+            if len(ring) >= 4:
+                p = Polygon(ring).buffer(0)
+                if not p.is_empty and p.area > 0:
+                    polys.append(p)
+    return unary_union(polys) if polys else None
+
+
+OLD_CORE_BUFFER_M = 40.0   # old buildings this close together form an old core ...
+OLD_CORE_MIN = 6           # ... of at least this many of them
+
+
+def old_cores(polys: list, old: list):
+    """The old cores of a twin where OSM maps no historic area: the union of OLD_CORE_BUFFER_M around the
+    buildings that are old by their own data (a register year or OSM tags), in clusters of at least OLD_CORE_MIN
+    of them (one listed church in a modern block is not an old town). None when there is no such cluster."""
+    from shapely.ops import unary_union
+    pts = [(p, k) for k, p in enumerate(polys) if old[k] and p is not None and not p.is_empty]
+    if len(pts) < OLD_CORE_MIN:
+        return None
+    blobs = unary_union([p.buffer(OLD_CORE_BUFFER_M) for p, _ in pts])
+    keep = []
+    for blob in getattr(blobs, "geoms", [blobs]):
+        n = sum(1 for p, _ in pts if blob.contains(p.representative_point()))
+        if n >= OLD_CORE_MIN:
+            keep.append(blob)
+    return unary_union(keep) if keep else None
 
 
 def street_matches(polys: list, tree, street: Optional[dict]):
@@ -516,6 +675,14 @@ def apply(build: Path, man: dict, buildings: list, source: Source, *, looks: boo
     polys = [b.poly if b.poly is not None else Polygon() for b in buildings]
     tree = STRtree(polys)
     shop_xy, wall_tags = street_matches(polys, tree, street)
+    old_area = historic_areas(street)
+    if old_area is None:    # no historic area in OSM here: the old cores of the old buildings themselves
+        own_old = [old_building(wall_tags.get(k, {})) or (b.year is not None and 0 < b.year < facades.OLD_TOWN_YEAR)
+                   for k, b in enumerate(buildings)]
+        old_area = old_cores(polys, own_old)
+    from shapely.prepared import prep
+    old_area_p = prep(old_area) if old_area is not None else None
+    n_historic = 0
     styles_n = defaultdict(int)
     info = []
     for k, b in enumerate(buildings):
@@ -524,10 +691,14 @@ def apply(build: Path, man: dict, buildings: list, source: Source, *, looks: boo
             hit = osm_tree.query(b.poly.representative_point(), predicate="within")
             cat = osm_cat[hit[0]] if len(hit) else None
         tags = wall_tags.get(k, {})
+        historic = old_building(tags) or (old_area_p is not None and b.poly is not None and not b.poly.is_empty and
+                                          old_area_p.contains(b.poly.representative_point()))
+        n_historic += historic
         bi_ = facades.BuildingInfo(id=b.id, year=b.year, uses=b.uses, height_m=b.height,
                                    area_m2=b.poly.area if b.poly is not None else 0.0, osm_category=cat,
                                    region=b.region, shop_pois=None if street is None else len(shop_xy.get(k, ())),
-                                   material=tags.get("building:facade:material") or tags.get("building:material"))
+                                   material=tags.get("building:facade:material") or tags.get("building:material"),
+                                   historic=historic)
         style, shop = facades.classify(bi_) if looks else ("plain", False)
         colour = facades.parse_colour(tags.get("building:facade:colour") or tags.get("building:colour"))
         info.append({"style": style, "shop": shop, "osm_category": cat, "colour": colour,
@@ -930,6 +1101,7 @@ def apply(build: Path, man: dict, buildings: list, source: Source, *, looks: boo
     man["stats"]["building_source"] = f"{source.label} ({n_parts} parts, {n_tris} triangles)"
     if looks:
         man["stats"]["facade_styles"] = dict(sorted(styles_n.items()))
+        man["stats"]["historic_buildings"] = int(n_historic)   # in an old-town area or tagged old (facades.classify)
         man["stats"]["party_walls"] = n_party
         man["stats"]["roof_photo"] = bool(ortho)
         man["stats"]["window_light_masks"] = n_lights

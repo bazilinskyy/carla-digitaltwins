@@ -69,7 +69,13 @@ def main(argv=None, default_source="auto"):
     build = Path(args.build_dir)
     man = json.loads((build / "ue" / "manifest.json").read_text())
     from twinmodel import regions
-    iso2 = twin_country(build)
+    iso2 = twin_country(build) or realbuildings.twin_iso2(build, man)   # an export without its build's report
+    if iso2 and not man.get("country"):
+        man["country"] = iso2       # remembered in the manifest: later runs need no lookup (twin_iso2 reads it)
+    built_dem = realbuildings.find_dem(build, man["bbox_wgs84"]) is not None
+    if not built_dem:
+        dp = realbuildings.dem_from_export(build, man)   # the build's elevation grid stayed behind: the export's own
+        print(f"elevation: no cached grid; {dp.name if dp else 'none'} from the export's surfaces", flush=True)
     plan = regions.plan_for(iso2, man["bbox_wgs84"])
     region = args.region or plan.facade_region
     if args.source != "auto":
@@ -98,6 +104,9 @@ def main(argv=None, default_source="auto"):
     if not blds:
         print("real buildings: no provider gave buildings (%s); the OSM buildings stay" % ", ".join(names))
         return 0
+    if not built_dem:       # restyling an export: the buildings it had keep their base heights
+        print(f"real buildings: {realbuildings.keep_bases(blds, man)} buildings kept on the export's base heights",
+              flush=True)
     print(f"real buildings: {source.name} for {iso2 or 'an unknown country'} (facade region {region})")
     if args.roof_photo_max_m is not None:
         source.roof_photo_max_m = args.roof_photo_max_m
@@ -110,6 +119,11 @@ def main(argv=None, default_source="auto"):
     ortho = None
     if looks:
         op = Path(args.ortho) if args.ortho else realbuildings.find_ortho(build, man["bbox_wgs84"])
+        if op is None and not args.ortho:    # the build's photo stayed behind: fetched again (ground_photo does too)
+            got, prov = realbuildings.fetch_twin_ortho(build, man)
+            op = realbuildings.find_ortho(build, man["bbox_wgs84"]) if got else None
+            if op is not None:
+                print(f"ortho: fetched again from {prov}")
         if op and op.exists():
             ortho = realbuildings.load_ortho(op, realbuildings.model_proj(man))
             if ortho:
@@ -137,6 +151,14 @@ def main(argv=None, default_source="auto"):
                         window_lights=not args.no_window_lights, street=street,
                         window_geometry=args.window_geometry or args.dry_run, interiors=args.interiors,
                         dry_run=args.dry_run)
+    if not args.dry_run:
+        # the OSM-detail and paving backups hold the manifest from before: restoring them (the next detail or paving
+        # run does, first) would bring back the old building meshes, now deleted (ZurichHB restyle, 2026-11-25)
+        import shutil
+        for d in ("landmarks_backup", "paving_backup"):
+            if (build / "ue" / d).is_dir():
+                shutil.rmtree(build / "ue" / d)
+                print(f"real buildings: {d}/ dropped (it held the buildings from before)")
     if not args.no_clearance and not args.dry_run:
         keep_clear(build)
     return 0
