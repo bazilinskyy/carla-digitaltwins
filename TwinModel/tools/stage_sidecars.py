@@ -24,6 +24,11 @@ Overpass query on a miss), LEVEL_DEFAULTS, and last the OpenDRIVE's own signal s
 the place's country was stamped is the street profile's calibration country (eu_dense: ES, so HelsinkiSenate and
 ZurichHB read ES). The manifest records, per level, what was staged: light_actors, the sign policy, the country
 and where it came from, and the dropped signal counts, for analyses and the docs.
+
+The level's own copy (Twins/<Name>/OpenDrive/<Name>.xodr, what an editor -game server reads) loses the same sign
+signals (light signals stay), the full file kept outside Content (<project>/Saved/xodr_full); any other .xodr in a
+level's OpenDrive folder is moved there too: the editor server reads the first *.xodr of that folder, and a full
+backup copy kept beside the level's own put every stock US sign back into the twin clips (24-28 Nov 2026).
 """
 import argparse
 import json
@@ -108,10 +113,38 @@ def plan(name, cfg, xodr_country, place=(None, None)):
     return drop, rec
 
 
-def stage(content, levels, dry_run=False, lookup=twinmodel_lookup):
+def tidy_level_folder(folder, name, aside):
+    """Moves every .xodr but <name>.xodr out of a level's OpenDrive folder into ``aside``; returns their names.
+    CARLA's editor server reads the FIRST *.xodr of that folder (UOpenDrive::LoadXODR): a full backup copy kept
+    beside the level's own (<name>.prebake_signs.xodr, 24-28 Nov 2026) was what it loaded, with every stock US
+    sign."""
+    moved = []
+    for p in sorted(Path(folder).glob("*.xodr")):
+        if p.name.lower() != f"{name}.xodr".lower():
+            Path(aside).mkdir(parents=True, exist_ok=True)
+            p.replace(Path(aside) / p.name)
+            moved.append(p.name)
+    return moved
+
+
+def has_types(path, types):
+    """True when the OpenDRIVE file has a signal of one of these types."""
+    if not types:
+        return False
+    pat = re.compile(r'<signal\s[^>]*?\btype="(%s)"' % "|".join(re.escape(t) for t in types))
+    with open(path, encoding="utf-8", errors="replace") as f:
+        return any(pat.search(line) for line in f)
+
+
+def stage(content, levels, dry_run=False, lookup=twinmodel_lookup, level_copies=True, aside=None):
+    """Writes each twin's package copy (Carla/Maps/OpenDrive/<Name>.xodr) and, with ``level_copies``, leaves the
+    stock sign signals out of the level's own copy too (what an editor -game server reads; light signals stay
+    there), the full file kept in ``aside`` (default <project>/Saved/xodr_full, outside Content: never beside the
+    level's copy, see tidy_level_folder)."""
     content = Path(content)
     twins = content / "Carla" / "Maps" / "Twins"
     out_dir = content / "Carla" / "Maps" / "OpenDrive"
+    aside = Path(aside) if aside else content.parent / "Saved" / "xodr_full"
     manifest = {}
     for d in sorted(p for p in twins.iterdir() if p.is_dir()) if twins.is_dir() else []:
         src = d / "OpenDrive" / f"{d.name}.xodr"
@@ -120,11 +153,20 @@ def stage(content, levels, dry_run=False, lookup=twinmodel_lookup):
         drop, rec = plan(d.name, levels.get(d.name), server_signs.xodr_country(src), place_country(d, src, lookup))
         dst = out_dir / f"{d.name}.xodr"
         if not dry_run:
+            rec["moved_aside"] = tidy_level_folder(src.parent, d.name, aside)
             out_dir.mkdir(parents=True, exist_ok=True)
             counts = xodr_drop_signals.drop_signals(str(src), str(dst), drop) if drop else {}
             if not drop:
                 dst.write_bytes(src.read_bytes())
             rec["dropped"] = dict(counts)
+            signs = [t for t in drop if t in server_signs.SIGN_TYPES]
+            if level_copies and has_types(src, signs):
+                aside.mkdir(parents=True, exist_ok=True)
+                full = aside / f"{d.name}.xodr"
+                full.write_bytes(src.read_bytes())
+                tmp = aside / f"{d.name}.level.tmp"
+                rec["level_dropped"] = dict(xodr_drop_signals.drop_signals(str(full), str(tmp), set(signs)))
+                tmp.replace(src)
         manifest[d.name] = rec
     return manifest
 
@@ -135,9 +177,12 @@ def main(argv=None):
     ap.add_argument("--levels", default=None, help="JSON {level: {light_actors, signs, country}}")
     ap.add_argument("--manifest", default=None, help="write the level manifest here (default: print it)")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--no-level-copies", action="store_true",
+                    help="leave the levels' own OpenDRIVE copies (editor servers) as they are")
+    ap.add_argument("--aside", default=None, help="where full copies go (default <project>/Saved/xodr_full)")
     a = ap.parse_args(argv)
     levels = json.loads(Path(a.levels).read_text()) if a.levels else {}
-    man = {"levels": stage(a.content, levels, a.dry_run),
+    man = {"levels": stage(a.content, levels, a.dry_run, level_copies=not a.no_level_copies, aside=a.aside),
            "note": "light_actors none: no CARLA traffic-light actors on that level (OpenDRIVE light signals left out "
                    "of the server copy); signs client: no CARLA sign actors, the client draws the real signs"}
     text = json.dumps(man, indent=1)

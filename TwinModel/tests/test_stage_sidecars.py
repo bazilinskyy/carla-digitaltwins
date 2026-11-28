@@ -34,6 +34,27 @@ def test_light_free_and_sign_free_server_copies(tmp_path):
     assert json.dumps(man)                                                         # the manifest serialises
 
 
+def test_level_copies_lose_the_signs_and_nothing_stays_beside_them(tmp_path):
+    c = tmp_path / "Content"
+    _twin(c, "SalamancaPlaza", "ES")
+    _twin(c, "NycMidtown", "US")
+    lvl = c / "Carla" / "Maps" / "Twins" / "SalamancaPlaza" / "OpenDrive"
+    (lvl / "SalamancaPlaza.prebake_signs.xodr").write_text(XODR.format(c="ES"))   # read first by the editor server
+    man = ss.stage(c, {}, lookup=lambda lat, lon: None)
+    own = (lvl / "SalamancaPlaza.xodr").read_text()
+    assert [p.name for p in lvl.glob("*.xodr")] == ["SalamancaPlaza.xodr"]
+    assert 'type="274"' not in own and 'type="205"' not in own and 'type="1000001"' in own   # lights stay
+    aside = tmp_path / "Saved" / "xodr_full"
+    assert 'type="274"' in (aside / "SalamancaPlaza.xodr").read_text()                    # the full one kept
+    assert (aside / "SalamancaPlaza.prebake_signs.xodr").exists()
+    assert man["SalamancaPlaza"]["moved_aside"] == ["SalamancaPlaza.prebake_signs.xodr"]
+    assert man["SalamancaPlaza"]["level_dropped"]["274"] == 1
+    nyc = (c / "Carla" / "Maps" / "Twins" / "NycMidtown" / "OpenDrive" / "NycMidtown.xodr").read_text()
+    assert 'type="274"' in nyc and "level_dropped" not in man["NycMidtown"]            # US: stock signs fit
+    again = ss.stage(c, {}, lookup=lambda lat, lon: None)                                # idempotent
+    assert "level_dropped" not in again["SalamancaPlaza"] and again["SalamancaPlaza"]["moved_aside"] == []
+
+
 def test_bad_option(tmp_path):
     import pytest
     with pytest.raises(ValueError):

@@ -1494,6 +1494,14 @@ def copy_xodr(manifest, name, map_root=MAP_ROOT, server_signs="auto"):
     else:
         shutil.copyfile(src, dst)
         log("xodr -> %s (%.1f MB; country %s: signals kept)" % (dst, os.path.getsize(dst) / 1e6, country))
+    # nothing but the level's own copy in its OpenDrive folder: CARLA's editor server reads the FIRST *.xodr there
+    # (a full backup copy beside it put every stock US sign back into the twin clips, 24-28 Nov 2026)
+    aside = os.path.join(unreal.Paths.project_saved_dir(), "xodr_full")
+    for other in sorted(os.listdir(dst_dir)):
+        if other.lower().endswith(".xodr") and other.lower() != (name + ".xodr").lower():
+            os.makedirs(aside, exist_ok=True)
+            shutil.move(os.path.join(dst_dir, other), os.path.join(aside, other))
+            log("xodr: %s moved out of the level's OpenDrive folder to %s" % (other, aside))
     # also where UOpenDrive::FindPathToXODRFile looks first and CARLA's DefaultGame.ini already stages loose files
     # (Carla/Maps/OpenDrive): a packaged server finds the twin's OpenDRIVE without a per-twin staging line
     if not map_root.startswith("/Game/"):       # a twin baked into a content pack: the pack manifest finds it
