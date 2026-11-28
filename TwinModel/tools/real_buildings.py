@@ -46,6 +46,9 @@ def main(argv=None, default_source="auto"):
     ap.add_argument("--roof-px", type=int, default=1024, help="aerial photo texture per tile")
     ap.add_argument("--no-source-textures", action="store_true",
                     help="ignore a city model's own photo textures (PLATEAU LoD 2): facade styles instead")
+    ap.add_argument("--photo-walls-above", type=float, default=realbuildings.PHOTO_WALLS_ABOVE_M,
+                    help="a city model's own wall photos only above this height (m) over the building's ground; "
+                         "the street storeys get the facade style (0: the photos on the whole wall)")
     ap.add_argument("--no-global", action="store_true",
                     help="no Overture/OSM prisms where no national model covers the twin (the OSM slabs stay)")
     ap.add_argument("--no-street-osm", action="store_true",
@@ -150,7 +153,7 @@ def main(argv=None, default_source="auto"):
                         roof_px=args.roof_px, procedural_min_height=args.procedural_min_height,
                         window_lights=not args.no_window_lights, street=street,
                         window_geometry=args.window_geometry or args.dry_run, interiors=args.interiors,
-                        dry_run=args.dry_run)
+                        dry_run=args.dry_run, photo_walls_above_m=args.photo_walls_above)
     if not args.dry_run:
         # the OSM-detail and paving backups hold the manifest from before: restoring them (the next detail or paving
         # run does, first) would bring back the old building meshes, now deleted (ZurichHB restyle, 2026-11-25)

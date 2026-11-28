@@ -554,6 +554,31 @@ class _Builder:
         return np.vstack(self.pos), np.vstack(self.nrm), np.vstack(self.uv), np.vstack(self.faces)
 
 
+PHOTO_WALLS_ABOVE_M = 8.0   # a city model's wall photos only above this height (the street storeys get a style)
+PHOTO_MIN_SPAN_M = 4.0      # a building lower than PHOTO_WALLS_ABOVE_M plus this: the style on every wall
+_PHOTO_MEAN = {}
+
+
+def photo_colour(paths: list, max_images: int = 8) -> Optional[tuple]:
+    """Median of the mean colours of a building's wall photos (sRGB 0-255), or None: the colour variant of the
+    style its street storeys get. Dark glass and sky reflections pull single photos; the median of several holds."""
+    from PIL import Image
+    means = []
+    for pth in sorted(set(paths))[:max_images]:
+        if pth not in _PHOTO_MEAN:
+            try:
+                im = Image.open(pth).convert("RGB")
+                im.thumbnail((32, 32))
+                _PHOTO_MEAN[pth] = tuple(float(c) for c in np.asarray(im, float).reshape(-1, 3).mean(0))
+            except Exception:  # noqa: BLE001 - a broken file: no colour from it
+                _PHOTO_MEAN[pth] = None
+        if _PHOTO_MEAN[pth] is not None:
+            means.append(_PHOTO_MEAN[pth])
+    if not means:
+        return None
+    return tuple(int(round(c)) for c in np.median(np.asarray(means), axis=0))
+
+
 ATLAS_PX = 4096      # one photo-texture atlas per tile (PLATEAU's LoD 2 facade and roof photos)
 ATLAS_GUTTER = 2
 
@@ -619,7 +644,7 @@ def apply(build: Path, man: dict, buildings: list, source: Source, *, looks: boo
           ortho=None, ortho_label: str = "", texture_px: Optional[int] = None, roof_px: int = 1024,
           procedural_min_height: Optional[float] = None, window_lights: bool = True,
           street: Optional[dict] = None, window_geometry: bool = False, interiors: bool = False,
-          dry_run: bool = False) -> dict:
+          dry_run: bool = False, photo_walls_above_m: float = None) -> dict:
     """Mesh, style and texture ``buildings`` and swap them into the bake export ``build``/ue (its
     manifest ``man`` is updated in place and written). Returns the manifest's stats.
 
@@ -632,7 +657,13 @@ def apply(build: Path, man: dict, buildings: list, source: Source, *, looks: boo
     the walls, the walls drawn without painted windows, one instanced module per style (reveal, frame, sill,
     glass) listed in the manifest (``window_modules``, ``window_instances``; provenance "inferred").
     ``interiors``: the glass shows a room picked by the building use (provenance "generated"), else dark glass.
-    ``dry_run``: count the windows and interiors per kind and return those stats; nothing is written."""
+    ``dry_run``: count the windows and interiors per kind and return those stats; nothing is written.
+
+    ``photo_walls_above_m`` (default PHOTO_WALLS_ABOVE_M; 0: the source's photos everywhere, as before 2026-11-28):
+    a city model's own wall photos (PLATEAU LoD 2) are aerial oblique images at about 19 cm per texel in the
+    exports, blurred, shadowed and sky-tinted at the street; walls keep them only above this height over the
+    building's ground, the storeys below get the building's facade style (shop floor included) with the wall
+    colour taken from its photos. Buildings lower than this plus PHOTO_MIN_SPAN_M get the style on every wall."""
     import shapely
     from shapely.geometry import Polygon
     from shapely.strtree import STRtree
@@ -650,6 +681,8 @@ def apply(build: Path, man: dict, buildings: list, source: Source, *, looks: boo
     from twinmodel.export import clearance
     clearance.restore(build / "ue", man)   # a road clearance cut is redone on the new meshes (clearance.apply)
     texture_px = texture_px or facades.TEX_PX
+    photo_walls_above_m = PHOTO_WALLS_ABOVE_M if photo_walls_above_m is None else float(photo_walls_above_m)
+    n_photo_band = n_photo_styled = 0
     procedural_min_height = facades.PROCEDURAL_MIN_HEIGHT_M if procedural_min_height is None \
         else procedural_min_height
     out = build / "ue"
@@ -724,14 +757,19 @@ def apply(build: Path, man: dict, buildings: list, source: Source, *, looks: boo
         photo_roof = ortho is not None and (source.roof_photo_max_m is None or b.height <= source.roof_photo_max_m)
         st = facades.STYLES.get(i["style"]) if looks else None
         if st is not None:
-            var = facades.variant_of(st.name, b.id, i["colour"])
+            colour = i["colour"]
+            if colour is None and b.textures and photo_walls_above_m > 0:
+                colour = photo_colour([b.textures[si][0] for si, (_, kd) in enumerate(b.surfaces)
+                                       if si in b.textures and kd == "WallSurface"])
+            var = facades.variant_of(st.name, b.id, colour)
             low_h = facades.SHOP_FLOOR_M if i["shop"] else 0.0
             n_st, storey_h = facades.storeys_for(b.height - low_h, st.storey_m)
             blank = facades.STYLES[facades.BLANK_OF.get(st.name, "blank_brick")]
             blank_key = facades.material_key(blank.name, facades.variant_of(blank.name, b.id) if
                                              blank.name != st.name else var)
-            shop_st = facades.STYLES["shopfront"]
-            shop_key = facades.material_key("shopfront", facades.variant_of("shopfront", b.id))
+            shop_name = facades.shop_style(b.region)
+            shop_st = facades.STYLES[shop_name]
+            shop_key = facades.material_key(shop_name, facades.variant_of(shop_name, b.id))
             key = facades.material_key(st.name, var)
             eaves_z = ground + b.height
             i["procedural"] = facades.procedural_ok(st.name, b.height, procedural_min_height)
@@ -751,13 +789,35 @@ def apply(build: Path, man: dict, buildings: list, source: Source, *, looks: boo
             n_tris += len(tri)
             tb = tiles[tile]
             used = True
+            photo_cut = False
             if looks and si in b.textures:   # the source's own photo: into the tile's atlas
                 img, uvs = b.textures[si]
-                ph = photo[tile]
-                idx = ph["images"].setdefault(img, len(ph["images"]))
-                ph["parts"].append((v, normal, np.vstack(uvs), idx, tri))
-                n_textured += 1
-                continue
+                uv = np.vstack(uvs)
+                wall_kind = not (kind == "RoofSurface" or abs(normal[2]) > 0.7)
+                if wall_kind and st is not None and photo_walls_above_m > 0:
+                    # the street storeys get the facade style; the photo only above photo_walls_above_m
+                    if b.height < photo_walls_above_m + PHOTO_MIN_SPAN_M:
+                        n_photo_styled += 1
+                        photo_cut = True
+                    else:
+                        (vb, tb_), (va, ta) = facades.clip_triangles(np.hstack([v, uv]), tri,
+                                                                     ground + photo_walls_above_m)
+                        if len(ta):
+                            ph = photo[tile]
+                            idx = ph["images"].setdefault(img, len(ph["images"]))
+                            ph["parts"].append((va[:, :3], normal, va[:, 3:5], idx, ta))
+                            n_textured += 1
+                        if not len(tb_):
+                            continue
+                        v, tri = vb[:, :3], tb_
+                        n_photo_band += 1
+                        photo_cut = True
+                if not photo_cut:
+                    ph = photo[tile]
+                    idx = ph["images"].setdefault(img, len(ph["images"]))
+                    ph["parts"].append((v, normal, uv, idx, tri))
+                    n_textured += 1
+                    continue
 
             def add_wall(mkey, v, tri, uvfn):
                 """Walls below the eaves of a procedural-capable building go apart (kind
@@ -800,8 +860,8 @@ def apply(build: Path, man: dict, buildings: list, source: Source, *, looks: boo
             n_wall += 1
             is_shop_wall = bool(i["shop"] and shop_wall(ring0, i["shop_xy"]))
             wkey, wshop_key = key, shop_key
-            if window_geometry:
-                shop_var = facades.variant_of("shopfront", b.id)
+            if window_geometry and not photo_cut:   # (a wall with the photo above keeps painted windows)
+                shop_var = facades.variant_of(shop_name, b.id)
                 # the storey grid of wall_uv: storeys from ground + low_h; a wall below that (the non-shop walls of
                 # a shop building) repeats the grid downwards, whole storeys
                 z_lo = ground + low_h
@@ -838,16 +898,17 @@ def apply(build: Path, man: dict, buildings: list, source: Source, *, looks: boo
                     if ops_up:
                         wkey = facades.material_key(st.name, var, windows=False)
                     if ops_shop:
-                        wshop_key = facades.material_key("shopfront", shop_var, windows=False)
+                        wshop_key = facades.material_key(shop_name, shop_var, windows=False)
                     use = facades.USE_OF_STYLE.get(st.name, "home")
                     for o in ops:
                         ost = facades.STYLES[o.style]
                         tf = winmod.instance_transform(o, normal, ring0, ost)
                         mk = winmod.module_key(o.style, o.door)
-                        o_use = "shop" if o.style == "shopfront" else use
-                        room = winmod.interior_of(o.style) if o.style != "shopfront" else "shop"
+                        o_shop = facades.STYLES[o.style].shop
+                        o_use = "shop" if o_shop else use
+                        room = winmod.interior_of(o.style) if not o_shop else "shop"
                         glass = ("interior_" + room) if (interiors and room) else "glass_" + o.style
-                        wall_mat = facades.material_key(o.style, shop_var if o.style == "shopfront" else var,
+                        wall_mat = facades.material_key(o.style, shop_var if o_shop else var,
                                                         windows=False)
                         for part, mat in (("reveal", wall_mat), ("frame", "frame_" + o.style),
                                           ("sill", "sill"), ("glass", glass)):
@@ -861,7 +922,7 @@ def apply(build: Path, man: dict, buildings: list, source: Source, *, looks: boo
                                 (tf, winmod.night_data(b.id, wall_no, o) if part == "glass" else None))
                         win_stats["windows"] += 1
                         win_stats["doors"] += int(o.door)
-                        win_stats["shop_windows"] += int(o.style == "shopfront")
+                        win_stats["shop_windows"] += int(o_shop)
                         win_stats["interiors_" + (room or "none")] += int(bool(interiors and room))
                         win_stats["use_" + o_use] += 1
                     win_stats["walls_with_windows"] += 1
@@ -911,7 +972,8 @@ def apply(build: Path, man: dict, buildings: list, source: Source, *, looks: boo
         tex_dir.mkdir(exist_ok=True)
         for key in sorted(k for k in used_keys if k.startswith(("facade_", "facadenw_"))):
             sname, var, painted = facades.parse_material_key(key)
-            alb, nrm_, orm = facades.synth_facade(facades.STYLES[sname], int(var), px=texture_px, windows=painted)
+            alb, nrm_, orm = facades.synth_facade(facades.STYLES[sname], int(var),
+                                                  px=facades.texture_px_for(sname, texture_px), windows=painted)
             entry = {}
             for suffix, arr in (("d", alb), ("n", nrm_), ("orm", orm)):
                 rel = f"textures/T_{name}_{key}_{suffix}.png"
@@ -1108,7 +1170,8 @@ def apply(build: Path, man: dict, buildings: list, source: Source, *, looks: boo
         if source.roof_photo_max_m is not None and ortho is not None:
             man["stats"]["roof_plain_tall"] = n_plain_roof
         man["stats"]["procedural_capable"] = sum(1 for i in info if i.get("procedural"))
-        man["stats"]["shopfront_buildings"] = sum(1 for i in info if i["shop"] or i["style"] == "shopfront")
+        man["stats"]["shopfront_buildings"] = sum(1 for i in info if i["shop"] or facades.STYLES.get(
+            i["style"], facades.STYLES["blank_brick"]).shop)
         man["stats"]["shopfront_walls"] = n_shop_walls
         if street is not None:
             man["stats"]["street_osm"] = {"pois": len(street.get("pois", ())),
@@ -1117,6 +1180,10 @@ def apply(build: Path, man: dict, buildings: list, source: Source, *, looks: boo
         if n_textured:
             man["stats"]["photo_textured_surfaces"] = n_textured
             man["stats"]["photo_atlases"] = len(atlases)
+        if n_photo_band or n_photo_styled:   # street storeys styled under the source's wall photos
+            man["stats"]["photo_walls_above_m"] = photo_walls_above_m
+            man["stats"]["photo_walls_street_styled"] = n_photo_band
+            man["stats"]["photo_walls_all_styled"] = n_photo_styled
         man["stats"].update(source.extra_stats)
     man["stats"]["triangles"] = int(sum(a["triangles"] for a in assets))
     (out / "manifest.json").write_text(json.dumps(man, indent=1))

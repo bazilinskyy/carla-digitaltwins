@@ -53,7 +53,7 @@ class Style:
     transom: bool = False       # horizontal bar at 2/3 height
     sill: bool = True
     lintel: bool = False        # darker soldier course above the window (brick)
-    glass: tuple = (52, 62, 72)
+    glass: tuple = (54, 60, 60)   # neutral grey-green glass (it was (52, 62, 72): renders read blue, B/G 1.2)
     mortar: tuple = (190, 185, 175)
     brick_m: tuple = (0.22, 0.0625)   # brick length incl. joint, course height
     shop: bool = False          # shopfront: sign band, door
@@ -63,6 +63,13 @@ class Style:
     surround: Optional[tuple] = None   # a moulded window surround (stone or stucco architrave) of this colour
     surround_m: float = 0.14           # its width around the frame
     balcony: bool = False          # a wrought-iron railing and a stone slab across each (floor-length) window
+    joint_m: float = 0.010         # brick / tile joint width
+    parapet: Optional[tuple] = None   # Japanese apartment balcony: a solid parapet panel of this colour across the
+                                      # whole bay in front of floor-length sliding doors, on a slab edge
+    spandrel: Optional[tuple] = None  # curtain wall: an opaque glass band of this colour over each floor slab
+    ties: bool = False             # exposed concrete: form-tie holes on a 0.6 x 0.45 m grid, formwork panel joints
+    sign_band: bool = False        # Japanese shop floor: a tall signboard band, one coloured panel per bay
+    glass_tint: float = 0.08       # per-window spread of the glass brightness (reflections, tint)
 
 
 STYLES = {s.name: s for s in (
@@ -99,16 +106,18 @@ STYLES = {s.name: s for s in (
     # offices: ribbon windows between concrete spandrels / a curtain wall
     Style("office_concrete", 3.6, 3.4, "concrete", ((172, 168, 160), (198, 196, 190)),
           window=(0.04, 0.96, 0.32, 0.86), frame=(80, 82, 85), mullions=2, sill=False),
-    Style("office_glass", 1.8, 3.6, "glass", ((70, 82, 92),),
+    # curtain wall: neutral grey-green glass (it was blue, (58, 76, 90)), dark spandrel glass over each floor slab,
+    # aluminium mullions and transoms; the panes' brightness varies (reflections, blinds, lit and dark rooms)
+    Style("office_glass", 1.8, 3.6, "glass", ((86, 90, 92), (120, 122, 120), (64, 68, 70)),
           window=(0.03, 0.97, 0.08, 0.97), frame=(150, 155, 160), frame_m=0.05, sill=False,
-          glass=(58, 76, 90)),
+          glass=(62, 70, 70), transom=True, spandrel=(44, 48, 50), glass_tint=0.14),
     # industry and warehouses: profiled metal sheet, one strip of high windows
     Style("industrial", 6.0, 4.5, "metal", ((168, 174, 178), (120, 128, 132)),
           window=(0.10, 0.90, 0.70, 0.86), frame=(90, 92, 95), mullions=3, sill=False),
     # ground floor of a building with shops or cafes
     Style("shopfront", 4.0, SHOP_FLOOR_M, "render", ((60, 60, 62), (110, 95, 80)),
           window=(0.06, 0.94, 0.03, 0.74), frame=(40, 40, 42), frame_m=0.08, mullions=1, sill=False,
-          glass=(48, 58, 66), shop=True),
+          glass=(50, 56, 56), shop=True),
     # pre-war masonry high-rise (New York: limestone and buff brick, punched windows)
     Style("stone_prewar", 1.8, 3.4, "brick", ((196, 184, 160), (172, 150, 118), (150, 112, 86)),
           window=(0.26, 0.74, 0.24, 0.84), frame=(225, 222, 212), mullions=0, transom=True,
@@ -138,20 +147,58 @@ STYLES = {s.name: s for s in (
     # central and northern European homes and blocks after 1900 or of unknown age: light plaster, not brick
     Style("render_central", 2.8, 3.0, "render", ((230, 228, 220), (212, 208, 196), (198, 194, 186), (224, 214, 194)),
           window=(0.20, 0.80, 0.16, 0.86), frame=(84, 84, 86), mullions=1, sill=True),
+    # Japan (PLATEAU wards; street photos of Shibuya and Tokyo apartment and office blocks as reference only):
+    # ceramic tile cladding (95 x 45 mm "nikoguchi" tiles) in beige, brown, off-white and grey, aluminium sliding
+    # windows without sills
+    Style("jp_tile", 3.0, 3.1, "tile", ((212, 198, 172), (176, 140, 106), (224, 222, 214), (132, 126, 118),
+                                        (192, 180, 162)),
+          window=(0.12, 0.88, 0.30, 0.86), frame=(178, 180, 180), frame_m=0.05, mullions=1, sill=False,
+          mortar=(204, 200, 192), brick_m=(0.10, 0.05), joint_m=0.005),
+    # Japanese apartment blocks ("mansions"): a balcony across every bay with a solid parapet panel (light concrete
+    # or frosted glass) in front of floor-length sliding doors, tiled walls behind
+    Style("jp_mansion", 3.4, 2.95, "tile", ((226, 222, 212), (206, 196, 180), (186, 170, 150), (156, 146, 134)),
+          window=(0.08, 0.92, 0.02, 0.86), frame=(176, 178, 178), frame_m=0.05, mullions=1, sill=False,
+          mortar=(210, 206, 198), brick_m=(0.10, 0.05), joint_m=0.005, parapet=(232, 230, 222)),
+    # Japanese offices and mixed blocks: ribbon windows between aluminium spandrel panels
+    Style("jp_office", 3.2, 3.6, "metal_panel", ((178, 180, 180), (150, 152, 154), (206, 204, 198), (118, 120, 122)),
+          window=(0.02, 0.98, 0.30, 0.88), frame=(104, 106, 108), frame_m=0.05, mullions=2, sill=False,
+          glass=(60, 66, 66), glass_tint=0.12),
+    # exposed concrete (uchippanashi): formwork panel joints and form-tie holes, steel windows
+    Style("jp_concrete", 2.7, 3.2, "concrete", ((170, 168, 162), (150, 148, 144)),
+          window=(0.16, 0.84, 0.26, 0.88), frame=(62, 64, 66), frame_m=0.05, mullions=1, sill=False, ties=True),
+    # Japanese shop floor: glazed fronts under a tall signboard band, one coloured panel per bay (no lettering:
+    # the shop signs themselves are props, coupled-carla streetprops)
+    Style("shopfront_jp", 3.6, SHOP_FLOOR_M, "render", ((52, 52, 54), (92, 88, 84)),
+          window=(0.05, 0.95, 0.03, 0.70), frame=(44, 44, 46), frame_m=0.07, mullions=1, sill=False,
+          glass=(50, 56, 56), shop=True, sign_band=True),
     # party walls, narrow walls, sheds: plain wall at true brick scale
     Style("blank_brick", 2.5, 3.0, "brick", ((132, 60, 44), (110, 80, 62)), blank=True, sill=False),
     # the plain wall of the light and buff brick styles
     Style("blank_brick_light", 2.5, 3.0, "brick", ((178, 148, 110), (160, 150, 140)), blank=True, sill=False),
     # the plain wall of the stucco and plaster styles
     Style("blank_render", 2.5, 3.0, "render", ((214, 206, 190), (196, 190, 178)), blank=True, sill=False),
+    # the plain wall of the Japanese styles: concrete
+    Style("blank_concrete", 2.5, 3.0, "concrete", ((176, 174, 168), (158, 156, 150)), blank=True, sill=False),
 )}
+
+# styles drawn at twice the texture size: the street-level storeys, seen from a few metres (TEX_PX already gives
+# 0.5-0.8 cm per texel on the upper storeys; a shop floor seen from the pavement needs about twice that)
+STREET_STYLES = {"shopfront", "shopfront_jp"}
+STREET_PX_MAX = 2048
+
+
+def texture_px_for(style: str, px: int = TEX_PX) -> int:
+    """Texture size of a style's facade: the street-level styles at twice ``px`` (at most STREET_PX_MAX)."""
+    return min(STREET_PX_MAX, 2 * px) if style in STREET_STYLES else px
 
 # style -> the plain wall its party walls get
 BLANK_OF = {"stone_prewar": "blank_brick", "stone_old": "blank_brick", "render_warm": "blank_brick",
             "render_modern": "blank_brick", "office_concrete": "blank_brick", "office_glass": "blank_brick",
             "industrial": "industrial", "shopfront": "blank_brick", "brick_wederopbouw": "blank_brick_light",
             "brick_contemporary": "blank_brick_light", "concrete_panel": "blank_brick", "office_brick": "blank_brick",
-            "stone_balcony": "blank_render", "stucco_old": "blank_render", "render_central": "blank_render"}
+            "stone_balcony": "blank_render", "stucco_old": "blank_render", "render_central": "blank_render",
+            "jp_tile": "blank_concrete", "jp_mansion": "blank_concrete", "jp_office": "blank_concrete",
+            "jp_concrete": "blank_concrete", "shopfront_jp": "blank_concrete"}
 
 
 def _crc(*parts) -> int:
@@ -253,7 +300,8 @@ MATERIAL_WALL = {"glass": "glass", "concrete": "concrete", "reinforced_concrete"
                  "bricks": "brick", "clinker": "brick", "plaster": "render", "render": "render", "stucco": "render",
                  "plastered": "render", "metal": "metal", "steel": "metal", "aluminium": "metal",
                  "metal_plates": "metal", "stone": "stone", "sandstone": "stone", "limestone": "stone",
-                 "granite": "stone", "marble": "stone"}
+                 "granite": "stone", "marble": "stone", "tile": "tile", "tiles": "tile", "ceramic": "tile",
+                 "ceramic_tiles": "tile"}
 CAMPUS_CATS = {"university", "college", "school", "hospital", "public", "civic", "government"}
 
 
@@ -280,10 +328,15 @@ def _nl_home(b: BuildingInfo, year: int) -> str:
 def _by_material(b: BuildingInfo, style: str, home: bool) -> str:
     """The style an OSM building:material asks for, given the style the year and use chose."""
     wall = MATERIAL_WALL.get((b.material or "").strip().lower().split(";")[0])
-    if wall is None or STYLES[style].wall == wall or style in ("shopfront", "blank_brick", "industrial"):
+    if wall is None or STYLES[style].wall == wall or style in ("shopfront", "shopfront_jp", "blank_brick",
+                                                                "industrial"):
         return style
+    if wall == "tile":
+        return "jp_tile" if b.region == "jp" else style
     if wall == "glass":
         return "office_glass"
+    if wall == "concrete" and b.region == "jp":
+        return "jp_concrete"
     if wall == "concrete":
         return "concrete_panel" if home else "office_concrete"
     if wall == "metal":
@@ -305,6 +358,30 @@ RELIGIOUS = {"church", "cathedral", "chapel", "basilica", "monastery", "convent"
              "religious", "shrine"}   # OSM building values: never office glass, whatever their height
 OLD_TOWN_YEAR = 1900   # built before this: an old-town facade in the south and central regions, area or not
 OLD_TOWN_MAX_M = 30.0  # taller buildings in an old town keep their own style (towers, modern blocks)
+
+
+def shop_style(region: str) -> str:
+    """The shop-floor style of a region: Japanese signboard fronts in Japan, else the plain shopfront."""
+    return "shopfront_jp" if region == "jp" else "shopfront"
+
+
+JP_TALL_M = 31.0   # Japan's old 31 m height limit: taller blocks are modern towers (curtain walls, panels)
+
+
+def _jp(b: BuildingInfo, use, cat) -> str:
+    """The facade of a Japanese building (PLATEAU usage and height; Shibuya and Tokyo street photos as reference):
+    offices, hotels and big shops are curtain walls above JP_TALL_M, else aluminium panels, tiles or exposed
+    concrete; homes and mixed blocks are tiled walls, apartment blocks of four storeys and more mostly with balcony
+    parapets across every bay. A stable share per building id, so neighbours differ."""
+    pick = _crc("jp", b.id) % 10
+    office = use in OFFICE_USES or use in SHOP_USES or (use is None and cat in OSM_OFFICE)
+    if office:
+        if b.height_m >= JP_TALL_M:
+            return "office_glass" if pick < 5 else "jp_office" if pick < 8 else "jp_tile"
+        return "jp_office" if pick < 4 else "jp_tile" if pick < 7 else "jp_concrete" if pick < 9 else "office_glass"
+    if b.height_m >= 11.0:
+        return "jp_mansion" if pick < 6 else "jp_tile" if pick < 9 else "jp_concrete"
+    return "jp_tile" if pick < 4 else "render_modern" if pick < 9 else "jp_concrete"
 
 
 def classify(b: BuildingInfo) -> tuple[str, bool]:
@@ -352,7 +429,9 @@ def _classify(b: BuildingInfo) -> tuple[str, bool]:
     one_storey_shop = b.height_m < SHOP_FLOOR_M + 2.5 and (
         use in SHOP_USES if b.shop_pois is None else (use in RETAIL_USES or (use in SHOP_USES and b.shop_pois > 0)))
     if one_storey_shop:
-        return "shopfront", False   # a one-storey shop: shopfront all the way up
+        return shop_style(b.region), False   # a one-storey shop: shopfront all the way up
+    if b.region == "jp":
+        return _jp(b, use, cat), shop_floor
     if b.region == "nl" and 0 < year < 1940 and b.height_m < 30.0:
         # before 1940 shops, cafes, offices and halls were brick buildings too (Eindhoven's Demer and
         # Vestdijk: 1900-1924 cafes and offices had the concrete office look before 2026-11-16)
@@ -367,8 +446,6 @@ def _classify(b: BuildingInfo) -> tuple[str, bool]:
             return "office_glass", shop_floor
         return "office_concrete", shop_floor
     # homes and mixed blocks
-    if b.region == "jp":
-        return "render_modern", shop_floor   # Japanese homes and apartment blocks: render and tiles, not brick
     if b.region == "south":
         if 0 < year < 1940:
             return "stone_old", shop_floor
@@ -526,7 +603,7 @@ def _periodic_noise(shape, scale_px: float, rng) -> np.ndarray:
     return out / m if m > 0 else out
 
 
-def _brick_layer(h, w, mw, mh, style: Style, colour, rng):
+def _brick_layer(h, w, mw, mh, style: Style, colour, rng, tone_sd: float = 0.09):
     """Running-bond brick wall over a (mw x mh metre) tile: colour image and height map."""
     bl, ch = style.brick_m
     nb = max(4, int(round(mw / bl)))
@@ -538,10 +615,10 @@ def _brick_layer(h, w, mw, mh, style: Style, colour, rng):
     cx = xs * nb / w + 0.5 * (course % 2)
     brick = np.floor(cx).astype(int) % nb
     fy, fx = cy - course, cx - np.floor(cx)
-    jy = 0.010 / ch      # 1 cm joints
-    jx = 0.010 / bl
+    jy = style.joint_m / ch      # 1 cm joints (tiles: 5 mm)
+    jx = style.joint_m / bl
     mortar = (fy < jy) | (fx < jx)
-    tone = rng.normal(0.0, 0.09, size=(nc, nb))
+    tone = rng.normal(0.0, tone_sd, size=(nc, nb))
     shade = 1.0 + tone[course % nc, brick]
     col = np.asarray(colour, float)[None, None, :] * shade[..., None]
     col[mortar] = style.mortar
@@ -549,26 +626,102 @@ def _brick_layer(h, w, mw, mh, style: Style, colour, rng):
     return col, height
 
 
+SIGN_COLOURS = ((236, 236, 230), (196, 44, 38), (234, 192, 44), (36, 78, 150), (38, 122, 74), (28, 28, 30),
+                (232, 120, 30), (210, 210, 214))   # Japanese signboards: white, red, yellow, blue, green, black, ...
+CURTAIN_COLOURS = ((226, 220, 204), (204, 196, 180), (150, 140, 125), (180, 170, 150), (120, 128, 132))
+
+
+def _occluded_rows(style: Style, gy0: int, gy1: int, floor: float, sh: float):
+    """Rows [a, b) of a window's glass that are not seen as glass: the curtain wall's spandrel over the floor slab
+    and the parapet of a Japanese balcony in front of the sliding doors. Shared by synth_facade and
+    synth_window_lights, so the night mask never lights a spandrel or a parapet."""
+    out = []
+    if style.spandrel is not None:
+        out.append((max(gy0, gy1 - int(round(0.85 / style.storey_m * sh))), gy1))
+    if style.parapet is not None:
+        out.append((max(gy0, int(round(floor - 1.1 / style.storey_m * sh))), gy1))
+    return out
+
+
+def _tile_layer(h, w, mw, mh, style: Style, colour, rng):
+    """Ceramic tile cladding: like _brick_layer at tile scale, a smaller tone spread and glazed sheen."""
+    col, height = _brick_layer(h, w, mw, mh, style, colour, rng, tone_sd=0.045)
+    return col, height
+
+
+def _concrete_ties(col, height, mw, mh, style: Style, rng):
+    """Exposed concrete: formwork panel joints (1.82 x 0.91 m panels, fitted to the tile) and six form-tie holes
+    per panel, a tone per panel."""
+    h, w = height.shape
+    nx, ny = max(1, int(round(mw / 1.82))), max(1, int(round(mh / 0.91)))
+    ys, xs = np.mgrid[0:h, 0:w]
+    px_, py_ = xs * nx / w, ys * ny / h
+    pi, pj = np.floor(px_).astype(int), np.floor(py_).astype(int)
+    tone = rng.normal(0.0, 0.035, size=(ny, nx))
+    col *= (1.0 + tone[pj % ny, pi % nx])[..., None]
+    fx, fy = px_ - pi, py_ - pj
+    jx, jy = 0.004 * nx / mw, 0.004 * ny / mh
+    joint = (fx < jx) | (fy < jy)
+    col[joint] *= 0.82
+    height[joint] = -0.25
+    r = 0.013   # tie hole radius (m)
+    for hx in (1 / 6, 1 / 2, 5 / 6):
+        for hy in (1 / 4, 3 / 4):
+            dx = (fx - hx) * mw / nx
+            dy = (fy - hy) * mh / ny
+            hole = dx * dx + dy * dy < r * r
+            col[hole] *= 0.55
+            height[hole] = -0.6
+    return col, height
+
+
+def _metal_panels(col, height, mw, mh, style: Style, rng):
+    """Aluminium spandrel panels: vertical joints every half bay, a joint at every storey, a soft sheen."""
+    h, w = height.shape
+    nx = 2 * TEX_BAYS
+    ys, xs = np.mgrid[0:h, 0:w]
+    fx = (xs * nx / w) % 1.0
+    fy = (ys * TEX_STOREYS / h) % 1.0
+    joint = (fx < 0.008 * nx / mw) | (fy < 0.008 * TEX_STOREYS / mh)
+    sheen = 1.0 + 0.05 * np.cos(2 * np.pi * fy)   # a soft vertical gradient on each panel
+    col *= sheen[..., None]
+    col[joint] *= 0.6
+    height[joint] = -0.4
+    return col, height
+
+
 def synth_facade(style: Style, variant: int = 0, px: int = TEX_PX, seed: int = 0, windows: bool = True):
     """(base colour uint8 HxWx3, normal uint8 HxWx3, ORM uint8 HxWx4) for one tile of a style:
     TEX_BAYS x TEX_STOREYS modules, seamless in both directions, row 0 = top. ``windows=False``: the wall
-    without its painted windows (floor bands stay), for walls whose windows are geometry (export/windows.py)."""
+    without its painted windows (floor bands stay), for walls whose windows are geometry (export/windows.py).
+
+    Windows (2026-11-28, Shibuya facades had a ninth of the photos' edge detail): a frame with a shadow line and
+    a bevel, the glass recessed behind it (a shadow along its top and left edges, darker AO), a brightness and
+    roughness per pane, and behind the glass blinds, curtains, a lit ceiling or a dark room; curtain walls have
+    spandrel glass over the floor slabs, Japanese apartment blocks balcony parapets, Japanese shop floors a
+    signboard band."""
     rng = np.random.default_rng(_crc(style.name, variant, seed))
     h = w = px
     mw, mh = TEX_BAYS * style.bay_m, TEX_STOREYS * style.storey_m
     colour = style.colours[variant % len(style.colours)]
     if style.wall == "brick":
         col, height = _brick_layer(h, w, mw, mh, style, colour, rng)
+    elif style.wall == "tile":
+        col, height = _tile_layer(h, w, mw, mh, style, colour, rng)
     else:
         col = np.ones((h, w, 3)) * np.asarray(colour, float)
         height = np.zeros((h, w))
-        if style.wall == "concrete":   # panel joints at every bay and storey
+        if style.wall == "concrete" and style.ties:
+            col, height = _concrete_ties(col, height, mw, mh, style, rng)
+        elif style.wall == "concrete":   # panel joints at every bay and storey
             ys, xs = np.mgrid[0:h, 0:w]
             jx = (xs * TEX_BAYS / w) % 1.0
             jy = (ys * TEX_STOREYS / h) % 1.0
             seam = (jx < 0.012 / style.bay_m * 2) | (jy < 0.012 / style.storey_m * 2)
             col[seam] *= 0.7
             height[seam] = -0.4
+        elif style.wall == "metal_panel":
+            col, height = _metal_panels(col, height, mw, mh, style, rng)
         elif style.wall == "metal":    # trapezoidal sheet, ribs every 20 cm
             xs = np.arange(w)[None, :] * mw / w
             rib = (xs % 0.2) / 0.2
@@ -578,8 +731,10 @@ def synth_facade(style: Style, variant: int = 0, px: int = TEX_PX, seed: int = 0
     # dirt / tone: tileable low-frequency variation
     col *= (1.0 + 0.06 * _periodic_noise((h, w), 48, rng))[..., None]
     col *= (1.0 + 0.03 * _periodic_noise((h, w), 6, rng))[..., None]
-    rough = np.full((h, w), 0.88 if style.wall in ("brick", "render", "concrete") else 0.45)
-    metal = np.full((h, w), 0.5 if style.wall == "metal" else 0.0)
+    rough = np.full((h, w), {"brick": 0.88, "render": 0.88, "concrete": 0.86, "tile": 0.55,
+                             "metal_panel": 0.42}.get(style.wall, 0.45))
+    rough *= 1.0 + 0.06 * _periodic_noise((h, w), 24, rng)
+    metal = np.full((h, w), 0.5 if style.wall == "metal" else 0.35 if style.wall == "metal_panel" else 0.0)
     ao = np.ones((h, w))
     if style.band is not None:   # floor edge / string course: a band just above every storey's floor
         bpx = max(2, int(round(style.band_m / style.storey_m * h / TEX_STOREYS)))
@@ -588,6 +743,7 @@ def synth_facade(style: Style, variant: int = 0, px: int = TEX_PX, seed: int = 0
             col[floor - bpx:floor] = np.asarray(style.band, float) * rng.uniform(0.96, 1.04)
             height[floor - bpx:floor] = 0.25
             rough[floor - bpx:floor] = 0.85
+            col[floor:min(h, floor + max(1, bpx // 4))] *= 0.85   # its shadow on the wall below
     if not style.blank and windows:
         bw, sh = w / TEX_BAYS, h / TEX_STOREYS
         fpx = _frame_px(style, bw)
@@ -602,47 +758,102 @@ def synth_facade(style: Style, variant: int = 0, px: int = TEX_PX, seed: int = 0
                         rng.uniform(0.97, 1.03)
                     height[sy0:sy1, max(0, wx0 - spx):min(w, wx1 + spx)] = 0.35
                     rough[sy0:sy1, max(0, wx0 - spx):min(w, wx1 + spx)] = 0.8
-                # frame (outer rectangle) then glass inset
+                # frame (outer rectangle) with a shadow line where it meets the wall, then the glass inset
                 col[wy0:wy1, wx0:wx1] = style.frame
                 height[wy0:wy1, wx0:wx1] = -0.3
                 rough[wy0:wy1, wx0:wx1] = 0.5
                 metal[wy0:wy1, wx0:wx1] = 0.0
+                line = max(1, fpx // 3)
+                col[wy0:wy0 + line, wx0:wx1] *= 0.72
+                col[wy0:wy1, wx0:wx0 + line] *= 0.8
                 gy0, gy1, gx0, gx1 = wy0 + fpx, wy1 - fpx, wx0 + fpx, wx1 - fpx
                 if gy1 <= gy0 or gx1 <= gx0:
                     continue
+                col[gy1:gy1 + line, gx0:gx1] = np.minimum(col[gy1:gy1 + line, gx0:gx1] * 1.15, 255)  # bevel light
                 gh = gy1 - gy0
-                grad = np.linspace(1.25, 0.8, gh)[:, None, None]   # sky reflection: brighter at the top
-                g = np.asarray(style.glass, float)[None, None, :] * grad
-                tint = 1.0 + 0.12 * rng.standard_normal()
-                col[gy0:gy1, gx0:gx1] = g * tint
+                grad = np.linspace(1.22, 0.82, gh)[:, None, None]   # sky reflection: brighter at the top
+                tint = float(np.clip(1.0 + style.glass_tint * rng.standard_normal(), 0.7, 1.4))
+                hue = 1.0 + rng.uniform(-0.03, 0.03, 3)                  # a little colour per pane, no blue bias
+                g = np.asarray(style.glass, float)[None, None, :] * grad * tint * hue[None, None, :]
+                col[gy0:gy1, gx0:gx1] = g
                 height[gy0:gy1, gx0:gx1] = -1.0
-                rough[gy0:gy1, gx0:gx1] = 0.06
+                rough[gy0:gy1, gx0:gx1] = rng.uniform(0.03, 0.12)
                 ao[gy0:gy1, gx0:gx1] = 0.85
-                if not style.shop and rng.random() < 0.35:   # curtains in some windows
-                    cw = int((gx1 - gx0) * rng.uniform(0.15, 0.35))
-                    curtain = (225, 218, 200) if rng.random() < 0.7 else (150, 140, 125)
-                    col[gy0:gy1, gx0:gx0 + cw] = curtain
-                    col[gy0:gy1, gx1 - cw:gx1] = curtain
-                    rough[gy0:gy1, gx0:gx0 + cw] = 0.9
-                    rough[gy0:gy1, gx1 - cw:gx1] = 0.9
+                # what is behind the glass
+                u = rng.random()
+                gw = gx1 - gx0
+                if u < 0.22:      # blinds, from the top down
+                    yb = gy0 + int(gh * rng.uniform(0.2, 0.9))
+                    slat = np.asarray((198, 196, 190), float) * rng.uniform(0.85, 1.05)
+                    col[gy0:yb, gx0:gx1] = slat
+                    pitch = max(2, int(round(0.035 / style.storey_m * sh)))
+                    col[gy0:yb:pitch, gx0:gx1] *= 0.72
+                    rough[gy0:yb, gx0:gx1] = 0.7
+                elif u < 0.42 and not style.shop:   # curtains drawn to both sides
+                    cw = int(gw * rng.uniform(0.15, 0.35))
+                    curtain = np.asarray(CURTAIN_COLOURS[int(rng.integers(len(CURTAIN_COLOURS)))], float)
+                    folds = 1.0 - 0.12 * (np.sin(np.arange(cw) * 2 * np.pi / max(3, cw / 3)) > 0)
+                    for c0 in (gx0, gx1 - cw):
+                        col[gy0:gy1, c0:c0 + cw] = curtain[None, None, :] * folds[None, :, None]
+                        rough[gy0:gy1, c0:c0 + cw] = 0.9
+                elif u < 0.52:    # a lit room: the ceiling's lights (fading downwards) and a paler back wall
+                    band = max(2, gh // 8)
+                    fade = np.linspace(1.6, 1.15, band)[:, None, None]
+                    col[gy0 + band:gy0 + 2 * band, gx0:gx1] = np.minimum(
+                        col[gy0 + band:gy0 + 2 * band, gx0:gx1] * fade + 18, 255)
+                    col[gy0 + 2 * band:gy0 + gh // 2, gx0:gx1] *= 1.12
+                # the frame's shadow on the recessed glass, along its top and left edges
+                rec = max(1, int(round(0.05 / style.storey_m * sh)))
+                col[gy0:gy0 + rec, gx0:gx1] *= 0.62
+                col[gy0:gy1, gx0:gx0 + max(1, rec // 2)] *= 0.75
+                ao[gy0:gy0 + rec, gx0:gx1] = 0.62
                 bar = max(1, fpx // 2)
                 for m in range(1, style.mullions + 1):
                     xm = gx0 + (gx1 - gx0) * m // (style.mullions + 1)
                     col[gy0:gy1, xm - bar:xm + bar] = style.frame
+                    col[gy0:gy1, xm + bar - 1:xm + bar] *= 0.75
                     height[gy0:gy1, xm - bar:xm + bar] = -0.3
                 if style.transom:
                     yt = gy0 + gh // 3
                     col[yt - bar:yt + bar, gx0:gx1] = style.frame
+                    col[yt + bar - 1:yt + bar, gx0:gx1] *= 0.75
                     height[yt - bar:yt + bar, gx0:gx1] = -0.3
+                for a, b in _occluded_rows(style, gy0, gy1, floor, sh):
+                    if style.spandrel is not None and style.parapet is None:   # opaque glass over the slab
+                        col[a:b, gx0:gx1] = np.asarray(style.spandrel, float) * rng.uniform(0.95, 1.05)
+                        rough[a:b, gx0:gx1] = 0.2
+                        ao[a:b, gx0:gx1] = 1.0
+                        col[a:a + bar, gx0:gx1] = style.frame
                 if style.sill and not door:
                     s0 = wy1
                     s1 = min(int(floor), wy1 + max(2, int(0.07 / style.storey_m * sh)))
                     col[s0:s1, wx0 - fpx:wx1 + fpx] = (200, 198, 190)
                     height[s0:s1, wx0 - fpx:wx1 + fpx] = 0.3
+                    d1 = min(int(floor), s1 + max(1, (s1 - s0) // 2))
+                    col[s1:d1, wx0 - fpx:wx1 + fpx] *= 0.82   # its drip shadow
                 if style.lintel:
                     l1 = wy0
                     l0 = max(0, wy0 - int(0.22 / style.storey_m * sh))
                     col[l0:l1, wx0:wx1] *= 0.8
+                if style.parapet is not None and not door:   # a balcony across the bay: parapet panel on a slab
+                    floor_px = int(round(floor))
+                    xa, xb = int(round(bx * bw)), int(round((bx + 1) * bw))
+                    p0 = max(0, int(round(floor - 1.1 / style.storey_m * sh)))
+                    slab = max(2, int(round(0.16 / style.storey_m * sh)))
+                    frosted = variant % 2 == 1
+                    pc = np.asarray((202, 206, 202) if frosted else style.parapet, float) * rng.uniform(0.96, 1.03)
+                    col[p0:floor_px, xa:xb] = pc
+                    rough[p0:floor_px, xa:xb] = 0.3 if frosted else 0.85
+                    ao[p0:floor_px, xa:xb] = 1.0
+                    metal[p0:floor_px, xa:xb] = 0.0
+                    height[p0:floor_px, xa:xb] = 0.6
+                    rail = max(1, int(round(0.03 / style.storey_m * sh)))
+                    col[p0:p0 + rail, xa:xb] = (170, 172, 172)                       # aluminium handrail
+                    metal[p0:p0 + rail, xa:xb] = 0.6
+                    col[p0 + rail:p0 + 2 * rail, xa:xb] *= 0.8
+                    col[floor_px - slab:floor_px, xa:xb] = np.asarray((214, 212, 206), float)   # slab edge
+                    col[floor_px - slab:floor_px - slab + 1, xa:xb] *= 0.8
+                    col[p0:floor_px, xa:xa + max(1, rail // 2)] *= 0.78              # panel joint at the bay edge
                 if style.balcony and not door:   # wrought-iron railing on a stone slab across the floor-length window
                     floor_px = int(round(floor))
                     slab = max(2, int(0.12 / style.storey_m * sh))
@@ -666,13 +877,27 @@ def synth_facade(style: Style, variant: int = 0, px: int = TEX_PX, seed: int = 0
                     metal[r0:s0, xa:xb] = np.where((col[r0:s0, xa:xb] == iron).all(-1), 0.6, metal[r0:s0, xa:xb])
                     height[r0:s0, xa:xb] = np.where((col[r0:s0, xa:xb] == iron).all(-1), 0.5, height[r0:s0, xa:xb])
                 if style.shop:   # sign band above the shop window
-                    b0 = max(0, int(floor - 0.97 * sh))
-                    b1 = max(b0 + 1, int(floor - 0.80 * sh))
-                    col[b0:b1, int(bx * bw):int((bx + 1) * bw)] = (30, 32, 36) if variant == 0 else (120, 30, 28)
-                    rough[b0:b1, int(bx * bw):int((bx + 1) * bw)] = 0.4
+                    xa, xb = int(bx * bw), int((bx + 1) * bw)
+                    if style.sign_band:   # Japanese signboard: a coloured panel per bay, a light frame, its shadow
+                        b0 = max(0, int(floor - 0.97 * sh))
+                        b1 = max(b0 + 1, int(floor - 0.74 * sh))
+                        pc = SIGN_COLOURS[int(rng.integers(len(SIGN_COLOURS)))]
+                        col[b0:b1, xa:xb] = pc
+                        edge = max(1, int(round(0.03 / style.storey_m * sh)))
+                        col[b0:b0 + edge, xa:xb] = (226, 226, 222)
+                        col[b1 - edge:b1, xa:xb] = (226, 226, 222)
+                        col[b0:b1, xa:xa + edge] = (226, 226, 222)
+                        col[b1:b1 + edge, xa:xb] *= 0.7
+                        height[b0:b1, xa:xb] = 0.5
+                        rough[b0:b1, xa:xb] = 0.3
+                    else:
+                        b0 = max(0, int(floor - 0.97 * sh))
+                        b1 = max(b0 + 1, int(floor - 0.80 * sh))
+                        col[b0:b1, xa:xb] = (30, 32, 36) if variant == 0 else (120, 30, 28)
+                        rough[b0:b1, xa:xb] = 0.4
     albedo = np.clip(col, 0, 255).astype(np.uint8)
     normal = height_to_normal(height, strength=3.0)
-    orm = np.stack([ao, rough, metal, np.zeros_like(ao)], axis=-1)
+    orm = np.stack([ao, np.clip(rough, 0.0, 1.0), metal, np.zeros_like(ao)], axis=-1)
     orm = np.clip(orm * 255.0, 0, 255).astype(np.uint8)
     return albedo, normal, orm
 
@@ -711,7 +936,8 @@ USE_OF_STYLE = {"stone_prewar": "home", "stone_old": "home", "render_warm": "hom
                 "brick_wederopbouw": "home", "brick_late": "home", "concrete_panel": "home",
                 "brick_contemporary": "home", "office_concrete": "office", "office_glass": "office",
                 "office_brick": "office", "shopfront": "shop", "industrial": "industry", "stone_balcony": "home",
-                "stucco_old": "home", "render_central": "home"}
+                "stucco_old": "home", "render_central": "home", "jp_tile": "home", "jp_mansion": "home",
+                "jp_office": "office", "jp_concrete": "office", "shopfront_jp": "shop"}
 
 
 def light_offset(building_id: str, wall: int) -> tuple[int, int]:
@@ -764,6 +990,8 @@ def synth_window_lights(style: Style, variant: int = 0, px_bay: int = MASK_PX_PE
         if style.transom:
             yt = gy0 + (gy1 - gy0) // 3
             r[yt - bar:yt + bar, gx0:gx1] = 0.0
+        for a, b_ in _occluded_rows(style, gy0, gy1, (sy + 1) * sh, sh):   # spandrel, balcony parapet
+            r[a:b_, gx0:gx1] = 0.0
     out = np.stack([r, g, b], axis=-1)
     return np.clip(np.round(out * 255.0), 0, 255).astype(np.uint8)
 

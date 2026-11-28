@@ -185,7 +185,7 @@ with gabled, hipped, pyramidal or skillion roofs where the source gives a roof s
 eaves); small homes without one get a pitched roof by the region's habit. Facade styles follow the region:
 Dutch and north European brick, southern sandstone (before 1940) and warm render, central and northern European
 plaster (Switzerland, Austria, Finland, the Baltics, Czechia, Slovakia, Hungary, Slovenia, Poland), US pre-war stone,
-Japanese render.
+Japanese tile, balcony, panel and concrete facades (below).
 
 **Old towns.** In the southern and central regions a building in an old town gets a historic facade: in OSM a
 historic area around it (a `heritage=*` area, `historic=district`, a cultural protected area with
@@ -239,7 +239,44 @@ ways inside junctions (`CrossingRules.from_ways`): the scramble's legs and diago
 surfaces), the textures are taken from the CityGML (`citygml.textures`, the images fetched from the zip by range
 requests) and packed into one 4096 px atlas per 250 m tile (`realbuildings.pack_atlas`), so the buildings carry
 their own photographed facades instead of a synthetic style (`real_buildings.py --no-source-textures` for the
-styles). They come from oblique aerial photos: right in colour and layout, soft at street level.
+styles). They come from oblique aerial photos: right in colour and layout, soft at street level. Measured on the
+Shibuya export (2026-11-28): the source photos have 15 cm per pixel on the walls (median; 12-19 cm), the atlases
+keep 60-90 % of that, so a wall shows about 19 cm per texel, against 0.5-0.8 cm for the synthetic styles: a storey
+is 15 texels high, with the street's shadows and the sky's reflection baked in. So since 2026-11-28 a wall keeps its
+photo only above 8 m over the building's ground (`--photo-walls-above`, 0 for the photo on the whole wall); the
+storeys below get the building's facade style (with its shop floor), in the variant nearest the median colour of
+the building's wall photos, and buildings under 12 m get the style on every wall. The roofs keep the photos.
+
+**Facade detail and Japanese styles (2026-11-28).** Every style's windows got detail: a frame with a shadow line
+and a bevel, the glass recessed behind it (the frame's shadow along its top and left edges, darker ambient
+occlusion), a brightness, colour and roughness of its own per pane, and behind the glass blinds, curtains, a lit
+ceiling or a dark room; sills cast a drip shadow, floor bands a shadow line. Glass is neutral grey-green (it was
+blue-grey, (52, 62, 72); the Shibuya renders' B/G was 1.20 against 0.98 in the photos), curtain walls
+(`office_glass`) have spandrel glass over each floor slab and transoms. Shop floors are drawn at 2048 px (twice
+the other styles), since they are seen from a few metres. Japan (`region` "jp", the PLATEAU usage code and height)
+has its own styles instead of the render it had:
+
+| Style | Wall | Japanese buildings that get it |
+|---|---|---|
+| `jp_tile` | ceramic tile cladding (95 x 45 mm tiles, 5 mm joints) in beige, brown, off-white, grey | 20-40 % of each kind (offices, apartment blocks, low homes) |
+| `render_modern` | light render | half the homes under 11 m |
+| `jp_mansion` | tiles behind a balcony on every bay: solid or frosted parapet, aluminium rail, slab edge, floor-length sliding doors | 60 % of homes and mixed blocks of 11 m and more |
+| `jp_office` | aluminium spandrel panels between ribbon windows | 30-40 % of offices, hotels and shops |
+| `jp_concrete` | exposed concrete: formwork joints, form-tie holes | 10-20 % of each |
+| `office_glass` | curtain wall | half the offices over 31 m (Japan's old height limit) |
+| `shopfront_jp` | glazed shop fronts under a tall signboard band, one coloured panel per bay | the shop floor of a building with shops |
+
+The signboard panels carry no lettering, logos or brands: the shop signs and screens with text are props placed
+by coupled-carla (`streetprops`), invented, never copied from photos.
+
+**What is real and what is generated on a building.** Real (from the open data): the footprint, height, roof
+shape and storeys (3DBAG, PLATEAU, NYC 3D, Catastro, BD TOPO, Overture, OSM), the use and construction year
+(BAG, PLUTO, PLATEAU usage, Catastro), a mapped wall material or colour (OSM), the roof photo (the national aerial
+photo) and, where a city model has them, the facade photos above the street storeys (PLATEAU). Inferred: the facade
+style from those attributes (region, era, use, height) and the shop floor from OSM's mapped shops. Generated: every
+synthetic facade texture (wall, windows, blinds, curtains, balconies, signboard colours), drawn by
+`twinmodel/export/facades.py` with numpy; nothing is copied from street photos, which serve only as reference for
+the styles' proportions and colours.
 
 **Tested (2026-11-15, lin5080, the CARLA 1.0 editor headless with `-nullrhi`):**
 

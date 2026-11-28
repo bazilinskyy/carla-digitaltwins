@@ -236,8 +236,71 @@ def test_plateau_meshes_and_coverage():
     assert buildings.choose(shibuya) == "plateau"
     assert buildings.choose((35.68, 139.76, 35.69, 139.77)) is None   # Chiyoda: no dataset listed yet
     assert pl.USAGE["414"]["retail"] > 0
-    assert fc.classify(fc.BuildingInfo(id="j", uses={"residential": 1}, height_m=20, area_m2=300,
-                                       region="jp")) == ("render_modern", False)
+    st, shop = fc.classify(fc.BuildingInfo(id="j", uses={"residential": 1}, height_m=20, area_m2=300, region="jp"))
+    assert st in ("jp_mansion", "jp_tile", "jp_concrete") and not shop   # Japanese tiles and balconies, not brick
+
+
+def test_japanese_styles_by_use_and_height():
+    def styles(**kw):
+        return {fc.classify(fc.BuildingInfo(id="J%d" % k, area_m2=400, region="jp", **kw))[0] for k in range(200)}
+    flats = styles(uses={"residential": 1}, height_m=24)
+    assert flats <= {"jp_mansion", "jp_tile", "jp_concrete"} and "jp_mansion" in flats
+    towers = styles(uses={"office": 1}, height_m=60)
+    assert {"office_glass", "jp_office"} <= towers and "render_modern" not in towers
+    assert styles(uses={"residential": 1}, height_m=7) <= {"jp_tile", "render_modern", "jp_concrete"}
+    # a shop floor in Japan is the signboard front; elsewhere the plain shopfront
+    assert fc.shop_style("jp") == "shopfront_jp" and fc.shop_style("nl") == "shopfront"
+    assert fc.classify(fc.BuildingInfo(id="s", uses={"retail": 1}, height_m=4.0, area_m2=80, region="jp"))[0] == \
+        "shopfront_jp"
+    assert all(fc.BLANK_OF[s] == "blank_concrete" for s in ("jp_tile", "jp_mansion", "jp_office", "jp_concrete"))
+
+
+def test_photo_walls_keep_the_photo_only_above_the_street_storeys(tmp_path):
+    # PLATEAU's wall photos are oblique aerial images (about 19 cm per texel in the Shibuya export): the street
+    # storeys get the building's facade style, the photo stays above photo_walls_above_m, its UVs cut with it
+    from PIL import Image
+    img = tmp_path / "wall.jpg"
+    Image.fromarray(np.full((64, 64, 3), (150, 120, 90), np.uint8)).save(img)
+    surf = _box(0, 0, 20, 20, 0.0, 30.0)
+    tex = {}
+    for si, (rings, kind) in enumerate(surf):
+        if kind == "WallSurface":
+            r = rings[0]
+            # u along the wall's 20 m, v up its 30 m (CityGML: origin bottom left)
+            along = np.linalg.norm(r[:, :2] - r[0, :2], axis=1) / 20.0
+            tex[si] = (str(img), [np.column_stack([along, r[:, 2] / 30.0])])
+    tall = rb.RealBuilding(id="JP.t", surfaces=surf, textures=tex, poly=Polygon([(0, 0), (20, 0), (20, 20), (0, 20)]),
+                           ground=0.0, height=30.0, uses={"office": 1}, region="jp")
+    surf2 = _box(40, 0, 50, 10, 0.0, 9.0)
+    tex2 = {si: (str(img), [np.column_stack([np.linspace(0, 1, 4), rings[0][:, 2] / 9.0])])
+            for si, (rings, kind) in enumerate(surf2) if kind == "WallSurface"}
+    low = rb.RealBuilding(id="JP.l", surfaces=surf2, textures=tex2, poly=Polygon([(40, 0), (50, 0), (50, 10), (40, 10)]),
+                          ground=0.0, height=9.0, uses={"residential": 1}, region="jp")
+    build = tmp_path / "b"
+    (build / "ue" / "meshes").mkdir(parents=True)
+    man = _manifest()
+    src = rb.Source(name="plateau", label="PLATEAU test", asset_source="test")
+    stats = rb.apply(build, man, [tall, low], src, texture_px=64)
+    assert stats["photo_walls_street_styled"] == 4 and stats["photo_walls_all_styled"] == 4
+    photo = [a for a in man["assets"] if a["material"].startswith("photo_")]
+    styled = [a for a in man["assets"] if a["material"].startswith("facade_")]
+    assert photo and styled
+    for a in photo:
+        g = read_glb(build / "ue" / a["file"])
+        pos = gltf_to_model(g["positions"])
+        walls = np.abs(g["normals"][:, 1]) < 0.5        # glTF y up: wall vertices
+        assert pos[walls][:, 2].min() >= 8.0 - 1e-6     # the photo only above 8 m
+        uv = g["uvs"][walls]
+        assert uv.min() >= -1e-6 and uv.max() <= 1 + 1e-6   # cut UVs stay inside the atlas image
+    low_z = []
+    for a in styled:
+        pos = gltf_to_model(read_glb(build / "ue" / a["file"])["positions"])
+        low_z.append(pos[:, 2].max())
+    assert min(low_z) <= 8.0 + 1e-6                     # the street storeys are styled
+    # photos everywhere, as before, with photo_walls_above_m=0
+    man0 = _manifest()
+    stats0 = rb.apply(build, man0, [tall, low], src, texture_px=64, photo_walls_above_m=0)
+    assert "photo_walls_street_styled" not in stats0 and stats0["photo_textured_surfaces"] == 8
 
 
 def test_an_export_without_its_builds_terrain_keeps_its_buildings_in_place(tmp_path):

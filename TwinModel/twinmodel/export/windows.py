@@ -37,7 +37,8 @@ REVEAL_M = {"brick_old": 0.22, "stone_prewar": 0.25, "stone_old": 0.28, "brick_w
             "brick_late": 0.12, "brick_postwar": 0.14, "brick_modern": 0.12, "brick_contemporary": 0.16,
             "render_modern": 0.14, "render_warm": 0.18, "concrete_panel": 0.10, "office_brick": 0.12,
             "office_concrete": 0.10, "office_glass": 0.03, "industrial": 0.05, "shopfront": 0.10,
-            "stone_balcony": 0.30, "stucco_old": 0.24, "render_central": 0.14}
+            "stone_balcony": 0.30, "stucco_old": 0.24, "render_central": 0.14, "jp_tile": 0.10,
+            "jp_mansion": 0.08, "jp_office": 0.05, "jp_concrete": 0.14, "shopfront_jp": 0.08}
 FRAME_DEPTH_M = 0.07     # frame profile depth
 GLASS_BACK_M = 0.03      # glass behind the frame's outer face
 SILL_H_M = 0.05          # sill thickness
