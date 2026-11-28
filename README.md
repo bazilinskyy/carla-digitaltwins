@@ -243,9 +243,13 @@ styles). They come from oblique aerial photos: right in colour and layout, soft 
 Shibuya export (2026-11-28): the source photos have 15 cm per pixel on the walls (median; 12-19 cm), the atlases
 keep 60-90 % of that, so a wall shows about 19 cm per texel, against 0.5-0.8 cm for the synthetic styles: a storey
 is 15 texels high, with the street's shadows and the sky's reflection baked in. So since 2026-11-28 a wall keeps its
-photo only above 8 m over the building's ground (`--photo-walls-above`, 0 for the photo on the whole wall); the
-storeys below get the building's facade style (with its shop floor), in the variant nearest the median colour of
-the building's wall photos, and buildings under 12 m get the style on every wall. The roofs keep the photos.
+photo only above the storey line nearest 8 m over the building's ground (`--photo-walls-above`, 0 for the photo on
+the whole wall); the storeys below get the building's facade style (with its shop floor), in the variant nearest
+the median colour of the building's wall photos, and buildings less than 4 m taller than that line get the style
+on every wall. The roofs keep the photos. Shibuya: 9,439 walls styled below their photo, 4,900 styled whole,
+890 buildings with a shop floor (4,232 walls; OSM's 1,035 mapped shops and cafes). The photos still show the
+real shop signs and billboards of 2023 above that line (brand names among them); `--no-source-textures` drops
+them for the styles.
 
 **Facade detail and Japanese styles (2026-11-28).** Every style's windows got detail: a frame with a shadow line
 and a bevel, the glass recessed behind it (the frame's shadow along its top and left edges, darker ambient
