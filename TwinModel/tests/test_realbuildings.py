@@ -291,14 +291,14 @@ def test_photo_walls_keep_the_photo_only_above_the_street_storeys(tmp_path):
         g = read_glb(build / "ue" / a["file"])
         pos = gltf_to_model(g["positions"])
         walls = np.abs(g["normals"][:, 1]) < 0.5        # glTF y up: wall vertices
-        assert pos[walls][:, 2].min() >= 8.0 - 1e-6     # the photo only above 8 m
+        assert pos[walls][:, 2].min() >= 6.0 - 1e-6     # the photo only above the storey line nearest 8 m
         uv = g["uvs"][walls]
         assert uv.min() >= -1e-6 and uv.max() <= 1 + 1e-6   # cut UVs stay inside the atlas image
     low_z = []
     for a in styled:
         pos = gltf_to_model(read_glb(build / "ue" / a["file"])["positions"])
         low_z.append(pos[:, 2].max())
-    assert min(low_z) <= 8.0 + 1e-6                     # the street storeys are styled
+    assert min(low_z) <= 10.0 + 1e-6                    # the street storeys are styled
     # photos everywhere, as before, with photo_walls_above_m=0
     man0 = _manifest()
     stats0 = rb.apply(build, man0, [tall, low], src, texture_px=64, photo_walls_above_m=0)

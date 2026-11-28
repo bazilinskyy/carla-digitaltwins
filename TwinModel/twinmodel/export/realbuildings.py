@@ -661,9 +661,10 @@ def apply(build: Path, man: dict, buildings: list, source: Source, *, looks: boo
 
     ``photo_walls_above_m`` (default PHOTO_WALLS_ABOVE_M; 0: the source's photos everywhere, as before 2026-11-28):
     a city model's own wall photos (PLATEAU LoD 2) are aerial oblique images at about 19 cm per texel in the
-    exports, blurred, shadowed and sky-tinted at the street; walls keep them only above this height over the
-    building's ground, the storeys below get the building's facade style (shop floor included) with the wall
-    colour taken from its photos. Buildings lower than this plus PHOTO_MIN_SPAN_M get the style on every wall."""
+    exports, blurred, shadowed and sky-tinted at the street; walls keep them only above the storey line of the
+    building's style nearest this height over its ground (shop floor included), the storeys below get the style
+    with the wall colour taken from its photos. Buildings lower than that line plus PHOTO_MIN_SPAN_M get the
+    style on every wall."""
     import shapely
     from shapely.geometry import Polygon
     from shapely.strtree import STRtree
@@ -772,6 +773,9 @@ def apply(build: Path, man: dict, buildings: list, source: Source, *, looks: boo
             shop_key = facades.material_key(shop_name, facades.variant_of(shop_name, b.id))
             key = facades.material_key(st.name, var)
             eaves_z = ground + b.height
+            # the source's wall photos start on a storey line of the style, near photo_walls_above_m
+            photo_cut_m = low_h + storey_h * max(1, int(round((photo_walls_above_m - low_h) / storey_h))) \
+                if photo_walls_above_m > low_h else low_h
             i["procedural"] = facades.procedural_ok(st.name, b.height, procedural_min_height)
             near = []
             if b.poly is not None and not b.poly.is_empty:
@@ -796,12 +800,11 @@ def apply(build: Path, man: dict, buildings: list, source: Source, *, looks: boo
                 wall_kind = not (kind == "RoofSurface" or abs(normal[2]) > 0.7)
                 if wall_kind and st is not None and photo_walls_above_m > 0:
                     # the street storeys get the facade style; the photo only above photo_walls_above_m
-                    if b.height < photo_walls_above_m + PHOTO_MIN_SPAN_M:
+                    if b.height < photo_cut_m + PHOTO_MIN_SPAN_M:
                         n_photo_styled += 1
                         photo_cut = True
                     else:
-                        (vb, tb_), (va, ta) = facades.clip_triangles(np.hstack([v, uv]), tri,
-                                                                     ground + photo_walls_above_m)
+                        (vb, tb_), (va, ta) = facades.clip_triangles(np.hstack([v, uv]), tri, ground + photo_cut_m)
                         if len(ta):
                             ph = photo[tile]
                             idx = ph["images"].setdefault(img, len(ph["images"]))
