@@ -711,11 +711,16 @@ def test_textured_surfaces_go_to_the_tile_atlas(tmp_path):
     build = tmp_path / "b"
     (build / "ue" / "meshes").mkdir(parents=True)
     man = _man()
-    stats = rb.apply(build, man, [b], rb.Source(name="plateau", label="p", asset_source="PLATEAU"), texture_px=32)
+    src = rb.Source(name="plateau", label="p", asset_source="PLATEAU")
+    # the photo on the whole wall (photo_walls_above_m=0, as before 2026-11-28)
+    stats = rb.apply(build, man, [b], src, texture_px=32, photo_walls_above_m=0)
     assert stats["photo_textured_surfaces"] == 1 and stats["photo_atlases"] == 1
     photo = [a for a in man["assets"] if a["material"].startswith("photo_")]
     assert len(photo) == 1 and photo[0]["asset"].endswith("_photo") and photo[0]["kind"] == "building_3dbag"
     assert (build / "ue" / man["textures"][photo[0]["material"]]["base_color"]).exists()
+    # by default a building this low (12 m) gets its facade style on every wall: no photo, no atlas
+    stats = rb.apply(build, _man(), [b], src, texture_px=32)
+    assert "photo_textured_surfaces" not in stats and stats["photo_walls_all_styled"] == 1
 
 
 def test_crossing_ways_become_zebras_with_their_walking_direction():
