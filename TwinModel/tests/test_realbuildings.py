@@ -253,6 +253,8 @@ def test_japanese_styles_by_use_and_height():
     assert fc.classify(fc.BuildingInfo(id="s", uses={"retail": 1}, height_m=4.0, area_m2=80, region="jp"))[0] == \
         "shopfront_jp"
     assert all(fc.BLANK_OF[s] == "blank_concrete" for s in ("jp_tile", "jp_mansion", "jp_office", "jp_concrete"))
+    assert fc.blank_of("office_glass", "jp") == "blank_concrete" and fc.blank_of("office_glass", "nl") == "blank_brick"
+    assert fc.classify(fc.BuildingInfo(id="h", height_m=3.0, area_m2=20, region="jp"))[0] == "blank_concrete"
 
 
 def test_photo_walls_keep_the_photo_only_above_the_street_storeys(tmp_path):

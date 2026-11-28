@@ -201,6 +201,14 @@ BLANK_OF = {"stone_prewar": "blank_brick", "stone_old": "blank_brick", "render_w
             "jp_concrete": "blank_concrete", "shopfront_jp": "blank_concrete"}
 
 
+def blank_of(style: str, region: str = "nl") -> str:
+    """The plain wall a style's party walls get: concrete in Japan (no red brick party walls in Tokyo), else
+    BLANK_OF."""
+    if region == "jp" and style != "industrial":
+        return "blank_concrete"
+    return BLANK_OF.get(style, "blank_brick")
+
+
 def _crc(*parts) -> int:
     return zlib.crc32("|".join(str(p) for p in parts).encode("utf-8"))
 
@@ -329,7 +337,7 @@ def _by_material(b: BuildingInfo, style: str, home: bool) -> str:
     """The style an OSM building:material asks for, given the style the year and use chose."""
     wall = MATERIAL_WALL.get((b.material or "").strip().lower().split(";")[0])
     if wall is None or STYLES[style].wall == wall or style in ("shopfront", "shopfront_jp", "blank_brick",
-                                                                "industrial"):
+                                                                "blank_concrete", "industrial"):
         return style
     if wall == "tile":
         return "jp_tile" if b.region == "jp" else style
@@ -402,7 +410,7 @@ def _classify(b: BuildingInfo) -> tuple[str, bool]:
     cat = (b.osm_category or "").lower()
     small = b.area_m2 < 40.0 and b.height_m < 4.0
     if small or (not b.uses and cat in OSM_SHED):
-        return "blank_brick", False
+        return ("blank_concrete" if b.region == "jp" else "blank_brick"), False
     big_low = use is None and b.area_m2 > 1500.0 and b.height_m < 10.0 and cat not in CAMPUS_CATS
     if (use in INDUSTRY_USES or (not b.uses and cat in OSM_INDUSTRY) or big_low) and b.height_m < INDUSTRIAL_MAX_M:
         return "industrial", False

@@ -764,7 +764,7 @@ def apply(build: Path, man: dict, buildings: list, source: Source, *, looks: boo
             var = facades.variant_of(st.name, b.id, colour)
             low_h = facades.SHOP_FLOOR_M if i["shop"] else 0.0
             n_st, storey_h = facades.storeys_for(b.height - low_h, st.storey_m)
-            blank = facades.STYLES[facades.BLANK_OF.get(st.name, "blank_brick")]
+            blank = facades.STYLES[facades.blank_of(st.name, b.region)]
             blank_key = facades.material_key(blank.name, facades.variant_of(blank.name, b.id) if
                                              blank.name != st.name else var)
             shop_name = facades.shop_style(b.region)
